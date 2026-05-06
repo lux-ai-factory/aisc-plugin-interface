@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import enum
 
 from pydantic import BaseModel
@@ -23,7 +23,6 @@ class ChartType(str, enum.Enum):
     BARS = "bars"
     PIE = "pie"
     CSV = "csv"
-    GAUGE = "gauge"
 
 
 class MetricVisualization(BaseModel):
