@@ -33,6 +33,9 @@ class PluginFeatureFlags(BaseModel):
     can_parse_config_from_dataset: bool = Field(
         False, description="Show the dataset dropdown"
     )
+    show_dimensions_visualisation: bool = Field(
+        False, description="Show the dimensions visualisation on the results page"
+    )
     extra: dict = Field({}, description="Additional feature flags")
 
 
