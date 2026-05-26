@@ -19,11 +19,11 @@ from typing import (
 
 from pydantic import BaseModel, Field
 
-from vera_plugin_interface.decorators.evaluation_input import InputDefinition
-from vera_plugin_interface.utils import classproperty
-from vera_plugin_interface.models.task import TaskProgress
-from vera_plugin_interface.input_providers.base_input_provider import BaseInputProvider
-from vera_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
+from aisc_plugin_interface.decorators.evaluation_input import InputDefinition
+from aisc_plugin_interface.utils import classproperty
+from aisc_plugin_interface.models.task import TaskProgress
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
+from aisc_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
 
 ProgressCallback: TypeAlias = Callable[[TaskProgress], None]
 ArtifactCallback: TypeAlias = Callable[[str, bytes], None]

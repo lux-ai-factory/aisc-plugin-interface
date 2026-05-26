@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from vera_plugin_interface import BaseEvaluationPlugin, Measure, metric
+from aisc_plugin_interface import BaseEvaluationPlugin, Measure, metric
 
 
 # Define the configuration form schema

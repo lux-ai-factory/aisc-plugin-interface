@@ -1,6 +1,6 @@
 from typing import Type
-from vera_plugin_interface.input_providers.base_input_provider import BaseInputProvider
-from vera_plugin_interface.models.evaluation_input import InputDefinition, InputType
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
+from aisc_plugin_interface.models.evaluation_input import InputDefinition, InputType
 
 
 def evaluation_input(name: str, label: str, input_provider_class: Type[BaseInputProvider], input_type: InputType, required: bool = True):

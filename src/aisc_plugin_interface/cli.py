@@ -19,7 +19,7 @@ def _get_package_name(pyproject: Path):
 
 
 def _render(template_name: str, context: dict) -> str:
-    template_file = files("vera_plugin_interface").joinpath("templates", template_name)
+    template_file = files("aisc_plugin_interface").joinpath("templates", template_name)
     template = template_file.read_text(encoding="utf-8")
     for key, value in context.items():
         template = template.replace(f"{{{{ {key} }}}}", value)
