@@ -1,4 +1,4 @@
-# VERA Plugin Interface
+# AISC Plugin Interface
 
 This repository provides the base interface for writing evaluation plugins.
 
@@ -19,10 +19,10 @@ That guide covers:
 Create a new plugin project:
 
 ```bash
-mkdir my-vera-plugin
-cd my-vera-plugin
+mkdir my-aisc-plugin
+cd my-aisc-plugin
 uv init --lib
-uv add git+https://github.com/lux-ai-factory/vera-plugin-interface
+uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface
 ```
 
 Implement a plugin class that inherits from `BaseEvaluationPlugin[T]`, then export it from your package `__init__.py`.
@@ -32,11 +32,11 @@ Minimal example:
 ```python
 from typing import Any
 
-from vera_plugin_interface.models.measure import Measure
-from vera_plugin_interface.base_evaluation_plugin import metric, BaseEvaluationPlugin
+from aisc_plugin_interface.models.measure import Measure
+from aisc_plugin_interface.base_evaluation_plugin import metric, BaseEvaluationPlugin
 from pydantic import BaseModel, Field
 
-from vera_plugin_interface import BaseEvaluationPlugin, Measure, metric
+from aisc_plugin_interface import BaseEvaluationPlugin, Measure, metric
 
 
 class ConfigFormSchema(BaseModel):

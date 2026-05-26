@@ -85,20 +85,20 @@ Create a new project in your plugin workspace:
 ```bash
 mkdir -p /absolute/path/to/plugins
 cd /absolute/path/to/plugins
-mkdir my-evaluation-plugin
-cd my-evaluation-plugin
+mkdir my-aisc-plugin
+cd my-aisc-plugin
 uv init --lib
-uv add git+https://github.com/lux-ai-factory/vera-plugin-interface
+uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface
 ```
 
 Recommended structure:
 
 ```text
-my-evaluation-plugin/
+my-aisc-plugin/
 ├── pyproject.toml
 ├── README.md
 ├── src/
-│   └── my_evaluation_plugin/
+│   └── my_aisc_plugin/
 │       ├── __init__.py
 │       └── plugin.py
 └── uv.lock
@@ -129,15 +129,15 @@ These pieces are sufficient for the basic plugin lifecycle:
 
 This example reads a CSV dataset and computes two aggregate metrics.
 
-### `src/my_evaluation_plugin/plugin.py`
+### `src/my_aisc_plugin/plugin.py`
 
 ```python
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from vera_plugin_interface import BaseEvaluationPlugin, Measure, TaskProgress, metric
-from vera_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
+from aisc_plugin_interface import BaseEvaluationPlugin, Measure, TaskProgress, metric
+from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
 
 
 class ConfigSchema(BaseModel):
@@ -209,7 +209,7 @@ class ExampleCsvPlugin(BaseEvaluationPlugin[ConfigSchema]):
         ]
 ```
 
-### `src/my_evaluation_plugin/__init__.py`
+### `src/my_aisc_plugin/__init__.py`
 
 ```python
 from .plugin import ExampleCsvPlugin
@@ -274,7 +274,7 @@ def set_dataset_input_provider(self, file_content: bytes | None):
 If you need another format, create a subclass of `BaseInputProvider`.
 
 ```python
-from vera_plugin_interface.input_providers.base_input_provider import BaseInputProvider
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 
 
 class JsonInputProvider(BaseInputProvider):

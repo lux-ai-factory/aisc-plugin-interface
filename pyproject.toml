@@ -1,5 +1,5 @@
 [project]
-name = "vera-plugin-interface"
+name = "aisc-plugin-interface"
 version = "0.2.4"
 description = "Add your description here"
 readme = "README.md"
@@ -14,12 +14,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vera_plugin_interface"]
+packages = ["src/aisc_plugin_interface"]
 
 [tool.hatch.build]
 include = [
-  "src/vera_plugin_interface/templates/*.tpl",
+  "src/aisc_plugin_interface/templates/*.tpl",
 ]
 
 [project.scripts]
-vera-plugin-interface = "vera_plugin_interface.cli:main"
+aisc-plugin-interface = "aisc_plugin_interface.cli:main"

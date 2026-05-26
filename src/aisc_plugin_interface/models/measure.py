@@ -1,6 +1,5 @@
-import enum
 from datetime import datetime
-import uuid
+import enum
 
 from pydantic import BaseModel
 
@@ -12,7 +11,7 @@ class Measure(BaseModel):
     score: float
     time: datetime = datetime.now()
     error: str | None = None
-    feature_pid: uuid.UUID | None = None
+    dimensions: dict[str, str | int | bool] | None = None
 
 
 class ChartType(str, enum.Enum):
