@@ -1,6 +1,6 @@
 [project]
 name = "aisc-plugin-interface"
-version = "0.2.4"
+version = "0.2.5"
 description = "Plugin interface for the AISC evaluation framework"
 authors = [{ name = "Sean Blevins", email = "sean.blevins@uni.lu" }]
 readme = "README.md"
@@ -17,10 +17,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aisc_plugin_interface"]
 
-[tool.hatch.build]
-include = [
-  "src/aisc_plugin_interface/templates/*.tpl",
-]
+[tool.hatch.build.targets.sdist]
+include = ["src/aisc_plugin_interface"]
 
 [project.scripts]
 aisc-plugin-interface = "aisc_plugin_interface.cli:main"
