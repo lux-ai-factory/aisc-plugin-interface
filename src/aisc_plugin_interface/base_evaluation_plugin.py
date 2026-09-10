@@ -21,11 +21,12 @@ from pydantic import BaseModel, Field
 
 from aisc_plugin_interface.models.datashape import DataShape
 from aisc_plugin_interface.decorators.evaluation_input import InputDefinition
-from aisc_plugin_interface.models.setting_definition import SettingDefinition
+from aisc_plugin_interface.models.project_config_definition import ProjectConfigDefinition
 from aisc_plugin_interface.utils import classproperty
 from aisc_plugin_interface.models.task import TaskProgress
 from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
+from aisc_plugin_interface.openai_client import OpenAICompatibleClient, OpenAICompatibleClientError
 
 ProgressCallback: TypeAlias = Callable[[TaskProgress], None]
 ArtifactCallback: TypeAlias = Callable[[str, bytes], None]
@@ -63,10 +64,12 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
 
     _input_definitions: list[InputDefinition] = []
     _input_provider_types: dict[str, Type[BaseInputProvider]] = {}
-    _setting_definitions: list[SettingDefinition] = []
+    _project_config_definitions: list[ProjectConfigDefinition] = []
 
     def __init__(self):
         self._input_provider_instances: dict[str, BaseInputProvider] = {}
+        self._input_payloads: dict[str, Any] = {}
+        self._input_endpoints: dict[str, dict[str, str | None]] = {}
         self._project_settings: dict[str, Any] = {}
         self._progress_callback: ProgressCallback | None = None
         self._artifact_callback: ArtifactCallback | None = None
@@ -132,8 +135,8 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         return self._input_definitions
 
     @property
-    def setting_definitions(self) -> list[SettingDefinition]:
-        return self._setting_definitions
+    def project_config_definitions(self) -> list[ProjectConfigDefinition]:
+        return self._project_config_definitions
 
     @property
     def display_icon(self) -> str:
@@ -291,6 +294,65 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         if provider is None:
             return None
         return provider.get_data()
+
+    def set_input_payload(self, name: str, payload: Any | None) -> None:
+        """
+        Called by the runtime. Stores the raw JSON payload for a component
+        that is not file-backed (e.g. a datashape).
+        """
+        if payload is not None:
+            self._input_payloads[name] = payload
+
+    def get_input_payload(self, name: str, default: Any = None) -> Any:
+        """
+        Get the raw JSON payload for a non-file-backed component input.
+        """
+        return self._input_payloads.get(name, default)
+
+    def get_input_datashape(self, name: str) -> DataShape | None:
+        """
+        Return the datashape input parsed into the `DataShape` pydantic model.
+
+        The runtime passes the datashape component's JSON payload; here it is
+        validated and parsed so the plugin can use typed accessors.
+        """
+        payload = self._input_payloads.get(name)
+        if payload is None:
+            return None
+        return DataShape.from_payload(payload)
+
+    def set_endpoint_input(self, name: str, endpoint: dict[str, str | None]) -> None:
+        """
+        Called by the runtime. Registers an endpoint-backed input (llm/rest)
+        with its base URL and, when available, its API key secret.
+        """
+        self._input_endpoints[name] = {
+            "endpoint_url": endpoint.get("endpoint_url"),
+            "api_key": endpoint.get("api_key"),
+        }
+
+    def get_endpoint_url(self, name: str) -> str | None:
+        """Return the configured URL of an endpoint-backed input (llm/rest)."""
+        endpoint = self._input_endpoints.get(name)
+        return endpoint.get("endpoint_url") if endpoint else None
+
+    def get_endpoint_api_key(self, name: str) -> str | None:
+        """Return the API key secret of an endpoint-backed input (llm/rest)."""
+        endpoint = self._input_endpoints.get(name)
+        return endpoint.get("api_key") if endpoint else None
+
+    def get_endpoint_client(self, name: str) -> OpenAICompatibleClient:
+        """
+        Return an OpenAI-compatible client configured from this input's URL
+        and API key. Uses the `openai` SDK when available, otherwise a
+        lightweight standard-library implementation.
+        """
+        url = self.get_endpoint_url(name)
+        if not url:
+            raise OpenAICompatibleClientError(
+                f"Endpoint input '{name}' has no endpoint_url configured"
+            )
+        return OpenAICompatibleClient(url, self.get_endpoint_api_key(name))
 
     @final
     def _set_project_settings(self, settings: dict[str, Any]) -> None:
