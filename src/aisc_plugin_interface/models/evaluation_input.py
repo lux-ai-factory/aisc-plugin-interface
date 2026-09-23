@@ -7,8 +7,8 @@ class InputType(str, enum.Enum):
     MODEL = "model"
     DATASET = "dataset"
     LLM = "llm"
-    REST = "rest"
     DATASHAPE = "datashape"
+    RESOURCE = "resource"
 
 
 class InputDefinition(BaseModel):

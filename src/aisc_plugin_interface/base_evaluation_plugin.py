@@ -1,6 +1,7 @@
 import copy
 import inspect
 import logging
+import textwrap
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sized
 from typing import (
@@ -20,13 +21,14 @@ from typing import (
 from pydantic import BaseModel, Field
 
 from aisc_plugin_interface.models.datashape import DataShape
+from aisc_plugin_interface.models.llm import LLMConfig
+from aisc_plugin_interface.models.resource import ResourceConfig
 from aisc_plugin_interface.decorators.evaluation_input import InputDefinition
 from aisc_plugin_interface.models.project_config_definition import ProjectConfigDefinition
 from aisc_plugin_interface.utils import classproperty
 from aisc_plugin_interface.models.task import TaskProgress
 from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
-from aisc_plugin_interface.openai_client import OpenAICompatibleClient, OpenAICompatibleClientError
 
 ProgressCallback: TypeAlias = Callable[[TaskProgress], None]
 ArtifactCallback: TypeAlias = Callable[[str, bytes], None]
@@ -58,6 +60,10 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     # The plugin name that will be displayed in the UI
     plugin_name: str | None = None
 
+    # Optional Markdown description shown on the plugin config page.
+    # Allows basic formatting (headings, lists, bold, code blocks).
+    description: str = ""
+
     # Controls the icon displayed in the plugin list.
     # Use a Material Design icon name https://fonts.google.com/icons
     ui_icon: str | None = None
@@ -68,8 +74,6 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
 
     def __init__(self):
         self._input_provider_instances: dict[str, BaseInputProvider] = {}
-        self._input_payloads: dict[str, Any] = {}
-        self._input_endpoints: dict[str, dict[str, str | None]] = {}
         self._project_settings: dict[str, Any] = {}
         self._progress_callback: ProgressCallback | None = None
         self._artifact_callback: ArtifactCallback | None = None
@@ -148,6 +152,16 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         For a new plugin, either redefine this property, or set the class attribute `ui_icon`
         """
         return self.ui_icon or "extension"
+
+    @property
+    def help_text(self) -> str:
+        """
+        The resolved Markdown description shown on the plugin config page.
+
+        Common leading whitespace is removed so descriptions written as an
+        indented triple-quoted string are NOT rendered as a Markdown code block.
+        """
+        return textwrap.dedent(self.description).strip()
 
     @property
     def config_type(self) -> type[T]:
@@ -295,64 +309,38 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
             return None
         return provider.get_data()
 
-    def set_input_payload(self, name: str, payload: Any | None) -> None:
-        """
-        Called by the runtime. Stores the raw JSON payload for a component
-        that is not file-backed (e.g. a datashape).
-        """
-        if payload is not None:
-            self._input_payloads[name] = payload
-
-    def get_input_payload(self, name: str, default: Any = None) -> Any:
-        """
-        Get the raw JSON payload for a non-file-backed component input.
-        """
-        return self._input_payloads.get(name, default)
-
     def get_input_datashape(self, name: str) -> DataShape | None:
         """
         Return the datashape input parsed into the `DataShape` pydantic model.
-
-        The runtime passes the datashape component's JSON payload; here it is
-        validated and parsed so the plugin can use typed accessors.
         """
-        payload = self._input_payloads.get(name)
+        payload = self.get_input_data(name)
         if payload is None:
             return None
         return DataShape.from_payload(payload)
 
-    def set_endpoint_input(self, name: str, endpoint: dict[str, str | None]) -> None:
+    def get_llm_config(self, name: str, default: LLMConfig | None = None) -> LLMConfig | None:
         """
-        Called by the runtime. Registers an endpoint-backed input (llm/rest)
-        with its base URL and, when available, its API key secret.
+        Return the llm input parsed into the `LLMConfig` pydantic model.
         """
-        self._input_endpoints[name] = {
-            "endpoint_url": endpoint.get("endpoint_url"),
-            "api_key": endpoint.get("api_key"),
-        }
+        payload = self.get_input_data(name)
+        if payload is None:
+            return default
+        try:
+            return LLMConfig.model_validate(payload)
+        except Exception:
+            return default
 
-    def get_endpoint_url(self, name: str) -> str | None:
-        """Return the configured URL of an endpoint-backed input (llm/rest)."""
-        endpoint = self._input_endpoints.get(name)
-        return endpoint.get("endpoint_url") if endpoint else None
-
-    def get_endpoint_api_key(self, name: str) -> str | None:
-        """Return the API key secret of an endpoint-backed input (llm/rest)."""
-        endpoint = self._input_endpoints.get(name)
-        return endpoint.get("api_key") if endpoint else None
-
-    def get_endpoint_client(self, name: str) -> OpenAICompatibleClient:
+    def get_resource_config(self, name: str, default: ResourceConfig | None = None) -> ResourceConfig | None:
         """
-        Return an OpenAI-compatible client configured from this input's URL
-        and API key. Uses the `openai` SDK when available, otherwise a
-        lightweight standard-library implementation.
+        Return the resource input parsed into the `ResourceConfig` pydantic model.
         """
-        url = self.get_endpoint_url(name)
-        if not url:
-            raise OpenAICompatibleClientError(
-                f"Endpoint input '{name}' has no endpoint_url configured"
-            )
-        return OpenAICompatibleClient(url, self.get_endpoint_api_key(name))
+        payload = self.get_input_data(name)
+        if payload is None:
+            return default
+        try:
+            return ResourceConfig.model_validate(payload)
+        except Exception:
+            return default
 
     @final
     def _set_project_settings(self, settings: dict[str, Any]) -> None:

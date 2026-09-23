@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 class ConfigCategory(str, enum.Enum):
     SECRETS = "secrets"
-    API_ENDPOINT = "api_endpoint"
     VARIABLES = "variables"
 
 
