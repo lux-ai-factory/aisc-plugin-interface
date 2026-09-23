@@ -3,26 +3,31 @@ import enum
 from pydantic import BaseModel, ConfigDict, field_validator
 
 
-class SettingCategory(str, enum.Enum):
+class ConfigCategory(str, enum.Enum):
     SECRETS = "secrets"
-    DATASHAPE = "datashape"
-    GENERAL = "general"
+    VARIABLES = "variables"
 
 
-class SettingValueType(str, enum.Enum):
+class ConfigValueType(str, enum.Enum):
     STRING = "string"
     NUMBER = "number"
     BOOLEAN = "boolean"
     JSON = "json"
 
 
-class SettingDefinition(BaseModel):
+class ProjectConfigDefinition(BaseModel):
+    """Describes one of a plugin's required project configs.
+
+    Maps to a project-level `ProjectConfig` (a secret, a variable, an API
+    endpoint, or a datashape) that the platform stores on the project.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     key: str
     name: str
-    category: SettingCategory
-    value_type: SettingValueType | None = None
+    category: ConfigCategory
+    value_type: ConfigValueType | None = None
     required: bool = True
 
     @field_validator("key")
