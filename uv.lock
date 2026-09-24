@@ -4,7 +4,7 @@ requires-python = ">=3.12"
 
 [[package]]
 name = "aisc-plugin-interface"
-version = "0.2.6"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },

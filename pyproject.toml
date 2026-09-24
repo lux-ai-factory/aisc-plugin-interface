@@ -1,6 +1,6 @@
 [project]
 name = "aisc-plugin-interface"
-version = "0.2.6"
+version = "0.3.0"
 description = "Plugin interface for the AISC evaluation framework"
 authors = [{ name = "Sean Blevins", email = "sean.blevins@uni.lu" }]
 maintainers = [
