@@ -87,8 +87,8 @@ mkdir -p /absolute/path/to/plugins
 cd /absolute/path/to/plugins
 mkdir my-aisc-plugin
 cd my-aisc-plugin
-uv init --lib
-uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface
+uv init --lib --python 3.12
+uv add aisc-plugin-interface
 ```
 
 Recommended structure:
@@ -114,9 +114,10 @@ The core contract is centered around these capabilities:
 - `validate_config_form_data(config_form_data)`: validates incoming configuration against your typed model
 - `@metric("...")`: marks metric export methods
 - `export_metrics(...)`: runs all metric exporters and aggregates their `Measure` outputs
-- `set_dataset_input_provider(file_content)`: optional dataset parsing hook
-- `set_model_input_provider(file_content)`: optional model parsing hook
-- `report_progress(TaskProgress(...))`: optional progress reporting hook
+- `@evaluation_input(...)`: declares a dataset/model input slot and its provider class
+- `get_input_data(name)`: returns parsed input data for slots declared with `@evaluation_input`
+- `progress_bar(...)` / `report_progress(TaskProgress(...))`: optional progress reporting hooks
+- `upload_artifact(name, content)`: optional artifact upload hook
 
 These pieces are sufficient for the basic plugin lifecycle:
 
@@ -136,7 +137,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from aisc_plugin_interface import BaseEvaluationPlugin, Measure, TaskProgress, metric
+from aisc_plugin_interface import BaseEvaluationPlugin, InputType, Measure, evaluation_input, metric
 from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
 
 
@@ -153,34 +154,31 @@ class ConfigSchema(BaseModel):
     )
 
 
+@evaluation_input(
+    name="dataset",
+    label="Dataset",
+    input_provider_class=CsvInputProvider,
+    input_type=InputType.DATASET,
+    required=True,
+)
 class ExampleCsvPlugin(BaseEvaluationPlugin[ConfigSchema]):
-    def set_dataset_input_provider(self, file_content: bytes | None):
-        if file_content is None:
-            raise ValueError("This plugin requires a dataset file")
-        self.dataset_input_provider = CsvInputProvider(file_content)
-        return self.dataset_input_provider
-
     def evaluate(self, config_data: dict) -> Any:
         config = self.validate_config_form_data(config_data)
-        rows = self.get_dataset()
+        rows = self.get_input_data("dataset")
+        if rows is None:
+            raise ValueError("This plugin requires a dataset file")
 
         scores: list[float] = []
-        total_rows = len(rows)
 
-        for index, row in enumerate(rows):
+        for row in self.progress_bar(rows, desc="Scoring rows"):
             raw_value = row.get(config.score_column)
             if raw_value is None or raw_value == "":
                 continue
 
-            scores.append(float(raw_value))
-
-            if total_rows:
-                self.report_progress(
-                    TaskProgress(
-                        progress=(index + 1) / total_rows,
-                        extra={"rows_processed": index + 1},
-                    )
-                )
+            try:
+                scores.append(float(raw_value))
+            except (TypeError, ValueError):
+                continue
 
         passing = [score for score in scores if score >= config.threshold]
 
@@ -191,6 +189,8 @@ class ExampleCsvPlugin(BaseEvaluationPlugin[ConfigSchema]):
 
     @metric("Average score")
     def average_score_metric(self, evaluation_output: dict) -> list[Measure]:
+        if not evaluation_output:
+            return []
         return [
             Measure(
                 name="Average score",
@@ -200,6 +200,8 @@ class ExampleCsvPlugin(BaseEvaluationPlugin[ConfigSchema]):
 
     @metric("Pass rate")
     def pass_rate_metric(self, evaluation_output: dict) -> list[Measure]:
+        if not evaluation_output:
+            return []
         return [
             Measure(
                 name="Pass rate",
@@ -242,18 +244,26 @@ config = self.validate_config_form_data(config_data)
 
 Even if the host application also validates configuration, the plugin should treat validated config as the boundary between transport data and business logic.
 
+The `form_ui_schema` class attribute customizes how the form renders (an RJSF UI schema keyed by field name, served via `get_config_form_ui_schema()`). Use it to pick widgets per field (keys are your config model's field names — the example below is illustrative); `on_config_change` can further adjust the returned UI schema at runtime, e.g. hiding irrelevant fields with `{"ui:widget": "hidden"}`.
+
+Example:
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    form_ui_schema = {
+        "threshold": {"ui:widget": "range"},
+        "metrics": {"ui:widget": "checkboxes"},
+        "notes": {"ui:widget": "textarea", "ui:placeholder": "Optional notes"},
+    }
+```
+
 ## 9. Input Parsing
 
 The plugin base class separates raw input delivery from parsed input consumption.
 
-If your plugin needs a dataset, override `set_dataset_input_provider`.
+Declare each dataset or model slot with the `@evaluation_input` class decorator, naming the provider class that parses it.
 
-If your plugin needs a model artifact, override `set_model_input_provider`.
-
-The base class provides:
-
-- `get_dataset()`: returns parsed dataset data
-- `get_model()`: returns parsed model data
+Inside `evaluate`, read parsed inputs with `get_input_data(name)`, which returns `None` when the input was not provided.
 
 ### Built-in CSV provider
 
@@ -262,11 +272,19 @@ The interface package includes `CsvInputProvider`, which turns CSV bytes into `l
 Example:
 
 ```python
-def set_dataset_input_provider(self, file_content: bytes | None):
-    if file_content is None:
-        raise ValueError("Dataset required")
-    self.dataset_input_provider = CsvInputProvider(file_content)
-    return self.dataset_input_provider
+from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input
+from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
+
+
+@evaluation_input(
+    name="dataset",
+    label="Dataset",
+    input_provider_class=CsvInputProvider,
+    input_type=InputType.DATASET,
+    required=True,
+)
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    ...
 ```
 
 ### Custom input providers
@@ -299,28 +317,60 @@ Metric methods must return `list[Measure]`.
 - `score`
 - `time`
 - `error`
-- `feature_pid`
+- `dimensions`
+- `direction`
 
 One plugin can export one metric or many metrics. This separation is useful because it lets the evaluation step produce a shared intermediate result and keeps metric extraction methods small and focused.
+
+To report a metric per slice (e.g. per split or class), emit several `Measure`s sharing the same `name`, each with scalar `dimensions` values (`dict[str, str | int | bool]`), and opt in to the dimensions visualisation via `feature_flags`.
 
 Example:
 
 ```python
-@metric("Accuracy")
-def accuracy_metric(self, evaluation_output) -> list[Measure]:
-    ...
+from aisc_plugin_interface import PluginFeatureFlags
 
 
-@metric("F1")
-def f1_metric(self, evaluation_output) -> list[Measure]:
-    ...
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    @property
+    def feature_flags(self) -> PluginFeatureFlags:
+        return PluginFeatureFlags(show_dimensions_visualisation=True)
+
+    @metric(name="accuracy")
+    def accuracy_metric(self, evaluation_output: Any) -> list[Measure]:
+        if not evaluation_output:
+            return []
+        return [Measure(name="accuracy", score=float(score), dimensions={"split": split})
+                for split, score in evaluation_output.get("accuracy_by_split", {}).items()]
+```
+
+Rules for dimensions: every per-slice `Measure` shares the same `name`; each `dimensions` value must be a scalar; use config-declared keys (e.g. the split names from the dataset) so the host can filter and group by them.
+
+Example:
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    @metric("Accuracy")
+    def accuracy_metric(self, evaluation_output) -> list[Measure]:
+        ...
+
+
+    @metric("F1")
+    def f1_metric(self, evaluation_output) -> list[Measure]:
+        ...
 ```
 
 ## 11. Progress Reporting
 
 Long-running plugins can report progress during evaluation.
 
-Use:
+For loops, prefer `self.progress_bar(...)`, which reports progress automatically as items are processed:
+
+```python
+for row in self.progress_bar(rows, desc="Evaluating"):
+    ...
+```
+
+For single long calls without an iterable, use:
 
 ```python
 self.report_progress(TaskProgress(progress=0.25, extra={"stage": "loading"}))
@@ -333,6 +383,8 @@ Rules:
 - progress reporting is optional
 
 Do not override `_set_progress_callback`; that is managed by the execution runtime.
+
+Upload intermediate or final files with `upload_artifact(name, content)`.
 
 ## 12. Optional Integration Hooks
 
@@ -356,6 +408,39 @@ From a pure plugin-architecture perspective, this hook can be read more generall
 - a place to derive secondary configuration fields
 - a place to resolve configuration against partially known inputs
 
+Example: hide an irrelevant field based on the current selection (`form_data` may be incomplete, so never validate it here):
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    def on_config_change(self, form_data: ConfigSchema | None) -> tuple[ConfigSchema | None, dict, dict]:
+        import copy
+
+        schema, ui_schema = self.get_full_schema()
+        data = form_data.model_dump() if form_data else {}
+        ui_schema = copy.deepcopy(ui_schema)
+        if data.get("task") != "multiclass":
+            ui_schema["num_classes"] = {"ui:widget": "hidden"}
+        return form_data, schema, ui_schema
+```
+
+### `feature_flags`
+
+This hook exposes plugin-specific capabilities to the host application.
+
+At the moment it is mostly used for host-specific behavior, but the pattern is potentially useful for broader capability negotiation between plugin and runtime.
+
+Example: opt in to dataset-driven config (pairs with `parse_config_from_dataset` below):
+
+```python
+from aisc_plugin_interface import PluginFeatureFlags
+
+
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    @property
+    def feature_flags(self) -> PluginFeatureFlags:
+        return PluginFeatureFlags(can_parse_config_from_dataset=True)
+```
+
 ### `parse_config_from_dataset`
 
 This hook attempts to infer configuration from the current dataset.
@@ -368,6 +453,21 @@ From an extensibility perspective, this suggests a broader family of possible ho
 - infer config from project metadata
 - infer config from external registries or schemas
 
+Example: infer the score column from the uploaded CSV header (requires `feature_flags` above):
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    def parse_config_from_dataset(self, file_content: bytes) -> dict | None:
+        from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
+
+        rows = CsvInputProvider(file_content).get_data()
+        if not rows:
+            return None
+        return {"score_column": next(iter(rows[0]), "")}
+```
+
+For the full dynamic-form patterns (conditional field groups, dataset-derived enums wired through `on_config_change`), see the `aisc-plugin-builder` skill.
+
 ### `get_metric_visualizations`
 
 This hook returns visualization metadata associated with exported metrics.
@@ -376,11 +476,12 @@ It is not part of the core evaluation algorithm, but it is currently the way a p
 
 If the goal is to keep the plugin contract implementation-focused, this hook can be treated as optional integration metadata rather than a required plugin concern.
 
-### `feature_flags`
+The default implementation returns a single `TABLE` with all metrics; override it to add charts or restrict which metrics each visualization shows. Metric names must match the `@metric(name=...)` strings.
 
-This hook exposes plugin-specific capabilities to the host application.
+Example:
 
-At the moment it is mostly used for host-specific behavior, but the pattern is potentially useful for broader capability negotiation between plugin and runtime.
+```python
+from aisc_plugin_interface import ChartType, MetricVisualization
 
 ### `description`
 
@@ -411,11 +512,27 @@ blocks). Leave it empty (the default) to hide the block on the config page.
 
 ### `display_icon`
 
-This hook is entirely presentation-oriented. It is useful only if the host application wants plugins to contribute presentation metadata.
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    def get_metric_visualizations(self, config_data: dict) -> list[MetricVisualization]:
+        return [MetricVisualization(chart_type=ChartType.TABLE, metrics=self.get_metrics()),
+                MetricVisualization(chart_type=ChartType.BARS, metrics=["Pass rate"], title="Pass rate")]
+```
+
+### `plugin_name` / `ui_icon`
+
+These class attributes are entirely presentation-oriented. They are useful only if the host application wants plugins to contribute presentation metadata.
+
+Set `plugin_name` to override the displayed name (otherwise the class name is shown), and `ui_icon` to a Material icon name.
+
+Example:
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    plugin_name = "My Evaluator"
+    ui_icon = "table_chart"  # a Material icon name, see https://fonts.google.com/icons
+```
 
 If the document should remain strictly focused on implementation concerns, this hook is peripheral.
-
-The easiest way to test a plugin is to decouple the concerns.
 
 ---
 
