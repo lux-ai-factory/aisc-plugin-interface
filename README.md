@@ -21,8 +21,8 @@ Create a new plugin project:
 ```bash
 mkdir my-aisc-plugin
 cd my-aisc-plugin
-uv init --lib
-uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface
+uv init --lib --python 3.12
+uv add aisc-plugin-interface
 ```
 
 Implement a plugin class that inherits from `BaseEvaluationPlugin[T]`, then export it from your package `__init__.py`.
@@ -32,8 +32,6 @@ Minimal example:
 ```python
 from typing import Any
 
-from aisc_plugin_interface.models.measure import Measure
-from aisc_plugin_interface.base_evaluation_plugin import metric, BaseEvaluationPlugin
 from pydantic import BaseModel, Field
 
 from aisc_plugin_interface import BaseEvaluationPlugin, Measure, metric
@@ -62,6 +60,8 @@ class MyPlugin(BaseEvaluationPlugin[ConfigFormSchema]):
 
     @metric("MyMetric")
     def my_metric(self, evaluation_output: Any) -> list[Measure]:
+        if not evaluation_output:
+            return []
         values = evaluation_output.get("MyMetric", [])
         return [Measure(name="MyMetric", score=value) for value in values]
 ```
