@@ -483,6 +483,34 @@ Example:
 ```python
 from aisc_plugin_interface import ChartType, MetricVisualization
 
+### `description`
+
+Optional Markdown text that the host renders on the plugin config page. Use it to describe
+what the plugin does, list its expected inputs, or add usage notes.
+
+It is a plain string attribute, so keep it simple: author it inline with a multi-line string,
+or assign it an imported constant if you prefer to keep it in a separate util module.
+
+```python
+class MyPlugin(BaseEvaluationPlugin[ConfigForm]):
+    plugin_name = "My Plugin"
+    description = """## What this plugin does
+
+Evaluates a candidate response against a reference answer.
+
+### Usage
+
+- Provide a **dataset** containing `reference` and `candidate` columns.
+- Optionally set a passing `threshold`.
+
+See `coding_assistant.md` in this package for details.
+"""
+```
+
+Markdown is rendered with standard GFM (headings, lists, bold, links, inline code and code
+blocks). Leave it empty (the default) to hide the block on the config page.
+
+### `display_icon`
 
 class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
     def get_metric_visualizations(self, config_data: dict) -> list[MetricVisualization]:
