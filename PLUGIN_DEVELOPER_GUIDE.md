@@ -539,7 +539,7 @@ If the document should remain strictly focused on implementation concerns, this 
 ##  License
 
 This guide is part of the AISC project, licensed under the [Apache License 2.0](LICENSE).  
-© 2024–2026 Université du Luxembourg and Luxembourg Institute of Science and Technology (LIST). Originally developed within the SerVal Research Group and the Interdisciplinary Centre for Security, Reliability and Trust (SnT).
+© 2024–2026 Université du Luxembourg and Luxembourg Institute of Science and Technology (LIST).
 
 
 
