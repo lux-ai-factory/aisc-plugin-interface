@@ -143,8 +143,10 @@ def _refused_ip(ip: ipaddress._BaseAddress) -> bool:
             or ip.is_unspecified)
 
 
-def guard_url(url: str, allowed_hosts: list[str] | None = None) -> None:
-    """Raise BlockedAddress unless ``url`` may be called."""
+def guard_url(url: str, allowed_hosts: list[str] | None = None, denied_addresses: list[str] | None = None) -> None:
+    """Raise BlockedAddress unless ``url`` may be called. ``denied_addresses`` (the stack's own
+    services and cloud metadata, from the platform) are refused on the resolved address, even for
+    an allowed host, so re-pointing an allowed name does not reach them."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https"):
         raise BlockedAddress(f"scheme {parts.scheme or '(none)'} is not allowed")
@@ -153,22 +155,29 @@ def guard_url(url: str, allowed_hosts: list[str] | None = None) -> None:
         raise BlockedAddress("the URL has no host")
     port = parts.port or (443 if parts.scheme == "https" else 80)
     allowed = [h.lower() for h in (allowed_hosts or [])]
-    if host in allowed or f"{host}:{port}" in allowed:
+    denied = {ipaddress.ip_address(a) for a in (denied_addresses or [])}
+    is_allowed = host in allowed or f"{host}:{port}" in allowed
+    if is_allowed and not denied:
         return
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
-    if literal is not None:
-        addresses = [literal]
-    else:
-        try:
-            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-        except socket.gaierror as exc:
-            raise BlockedAddress(f"{host} does not resolve") from exc
-        addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    addresses = _addresses(host, port)
+    if any(ip in denied for ip in addresses):
+        raise BlockedAddress(f"{host} is a service of this deployment or a metadata address, never allowed")
+    if is_allowed:
+        return
     if not addresses or any(_refused_ip(ip) for ip in addresses):
-        raise BlockedAddress(f"{host} is an internal address; list it in CONNECTIONS_ALLOWED_HOSTS to allow it")
+        raise BlockedAddress(f"{host} is an internal address; allow it under Manage, Connections, Allowed internal hosts")
+
+
+def _addresses(host: str, port: int) -> list:
+    try:
+        return [ipaddress.ip_address(host)]
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise BlockedAddress(f"{host} does not resolve") from exc
+    return [ipaddress.ip_address(info[4][0]) for info in infos]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -354,8 +363,8 @@ def _a2a_outcome(d: Descriptor, result: Any) -> tuple[str, Any]:
     raise EndpointBadResponse(f"{d.label}: the A2A task ended in {state}")
 
 
-def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts) -> Any:
-    guard_url(url, allowed_hosts)
+def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts, denied_addresses=None) -> Any:
+    guard_url(url, allowed_hosts, denied_addresses)
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
     try:
         with _OPENER.open(req, timeout=d.timeout_s) as resp:
@@ -367,7 +376,7 @@ def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts
 
 
 def _a2a_answer(d: Descriptor, payload: Any, url: str, headers: dict, allowed_hosts, sleep, status: int,
-                latency: int) -> Answer:
+                latency: int, denied_addresses=None) -> Answer:
     deadline = time.monotonic() + d.timeout_s
     while True:
         if not isinstance(payload, dict):
@@ -385,18 +394,18 @@ def _a2a_answer(d: Descriptor, payload: Any, url: str, headers: dict, allowed_ho
         sleep(1)
         legacy = _a2a_legacy(d)
         payload = _post_json(d, url, headers, a2a_request(d, "tasks/get" if legacy else "GetTask", {"id": value}),
-                             allowed_hosts)
+                             allowed_hosts, denied_addresses)
 
 
 def call(d: Descriptor, input: Any, history: list | None = None, params: dict | None = None,
          allowed_hosts: list[str] | None = None, sleep: Callable[[float], None] = time.sleep,
-         waits: tuple = RETRY_WAITS) -> Answer:
+         waits: tuple = RETRY_WAITS, denied_addresses: list[str] | None = None) -> Answer:
     """One question to the system, with the retries (``waits``: seconds before each retry; ``()``
     for a single probe, as the platform's Test button does); see EndpointClient.ask."""
     method, url, headers, data = render_request(d, input, history, dict(params or {}))
     waits = list(waits)
     while True:
-        guard_url(url, allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env())
+        guard_url(url, allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses)
         started = time.monotonic()
         retryable: EndpointError
         try:
@@ -434,7 +443,7 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
                                    allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),
-                                   sleep, status, latency)
+                                   sleep, status, latency, denied_addresses)
             if status < 300:
                 path = {"openai": "choices[0].message.content", "oip": d.response_path or "outputs[0].data[0]"}.get(
                     d.kind, d.response_path)
@@ -454,10 +463,11 @@ class EndpointClient:
     """One system under test, for one plugin run."""
 
     def __init__(self, descriptor: Descriptor, plugin=None, allowed_hosts: list[str] | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, denied_addresses: list[str] | None = None):
         self.descriptor = descriptor
         self._plugin = plugin
         self._allowed = allowed_hosts
+        self._denied = denied_addresses
         self._sleep = sleep
         self._recorded = False
 
@@ -478,12 +488,16 @@ class EndpointClient:
             raise EndpointError(f"the platform refused to resolve connection {name!r} ({exc.code})") from None
         except (urllib.error.URLError, TimeoutError, _Redirected) as exc:
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
-        return cls(Descriptor.from_dict(data), plugin=plugin, **kwargs)
+        # The network rule is the platform's, per project: the internal hosts this connection may
+        # reach and the addresses it never may. The run's own environment opens nothing.
+        return cls(Descriptor.from_dict(data), plugin=plugin, allowed_hosts=list(data.get("allowed_hosts") or []),
+                   denied_addresses=list(data.get("denied_addresses") or []), **kwargs)
 
     def ask(self, input: Any, history: list | None = None, **params) -> Answer:
         """Send ``input`` (text, or a JSON object/list for a structured system) after ``history`` (a list of
         {"role", "content"} turns) and return the answer."""
-        answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep)
+        answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep,
+                      denied_addresses=self._denied)
         self._record()
         return answer
 

@@ -475,7 +475,9 @@ The client resolves the connection from the platform, renders the request, calls
 the answer and records what was assessed as the artifact `connection-<name>.json` (never the key).
 Errors are `EndpointAuthError`, `EndpointNotFound`, `EndpointTimeout`, `EndpointBadResponse` and
 `BlockedAddress`, all subclasses of `EndpointError`. Internal addresses are refused unless the
-deployment lists them in `CONNECTIONS_ALLOWED_HOSTS`. The client uses the standard library only.
+project allows them (Manage → Connections, Allowed internal hosts, or the deployment's
+`CONNECTIONS_ALLOWED_HOSTS`); the platform hands the run that rule with the connection, so the
+plugin needs no setting of its own. The client uses the standard library only.
 
 ##  License
 
