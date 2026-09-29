@@ -419,6 +419,35 @@ The easiest way to test a plugin is to decouple the concerns.
 
 ---
 
+## 13. Calling a System Under Test (Manage → Connections)
+
+A project admin registers the AI systems the project assesses over the network under **Manage →
+Connections** on the project page: an OpenAI-compatible endpoint, or any REST API with a request
+template. An evaluation binds one as a `resource` input. To support it, declare the input and ask
+the client for the answer:
+
+```python
+from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input
+from aisc_plugin_interface.connections import EndpointClient
+
+
+@evaluation_input(name="system", label="System under test", input_type=InputType.RESOURCE, required=True)
+class MyPlugin(BaseEvaluationPlugin[MyConfig]):
+    def evaluate(self, config_data):
+        system = EndpointClient.for_input(self, "system")
+        answer = system.ask("Is my nationality an input?", history=[...])   # history optional
+        if answer.refused:
+            ...                          # the system declined; answer.refusal_reason says why
+        else:
+            ...                          # answer.text
+```
+
+The client resolves the connection from the platform, renders the request, calls the system, reads
+the answer and records what was assessed as the artifact `connection-<name>.json` (never the key).
+Errors are `EndpointAuthError`, `EndpointNotFound`, `EndpointTimeout`, `EndpointBadResponse` and
+`BlockedAddress`, all subclasses of `EndpointError`. Internal addresses are refused unless the
+deployment lists them in `CONNECTIONS_ALLOWED_HOSTS`. The client uses the standard library only.
+
 ##  License
 
 This guide is part of the AISC project, licensed under the [Apache License 2.0](LICENSE).  
