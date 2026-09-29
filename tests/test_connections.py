@@ -204,7 +204,7 @@ def test_i8_the_first_call_uploads_what_was_assessed_once_without_the_secret(stu
     assert list(p.artifacts) == ["connection-mcas-chat.json"]
     doc = json.loads(p.artifacts["connection-mcas-chat.json"])
     assert "s3cr3t-value" not in json.dumps(doc) and "secret" not in doc["connection"]
-    public = dict(MCAS, base_url=stub.base)
+    public = dict(MCAS, base_url=stub.base, protocol_version=None)
     del public["secret"]
     assert doc["connection"] == public
     assert doc["sha256"] == hashlib.sha256(json.dumps(public, sort_keys=True).encode()).hexdigest()

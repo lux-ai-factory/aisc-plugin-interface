@@ -32,6 +32,8 @@ class Stub:
                 status, payload, delay = plan.pop(0) if len(plan) > 1 else plan[0]
                 if delay:
                     time.sleep(delay)
+                if callable(payload):
+                    payload = payload(stub.seen[-1])
                 if status in (301, 302):
                     self.send_response(status); self.send_header("Location", payload); self.end_headers(); return
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()

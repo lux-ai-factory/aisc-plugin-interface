@@ -23,6 +23,7 @@ import os
 import re
 import socket
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -91,7 +92,7 @@ def reference_of(plugin, input_name: str) -> tuple[str, str]:
 class Descriptor:
     name: str
     label: str
-    kind: str                                # "openai" | "rest"
+    kind: str                                # "openai" | "rest" | "a2a" | "oip"
     base_url: str
     method: str = "POST"
     path: str = ""
@@ -104,9 +105,11 @@ class Descriptor:
     timeout_s: int = 60
     secret: str | None = None
     updated_at: str | None = None
+    protocol_version: str | None = None      # a2a: "1.0" (default) or "0.3"
 
     FIELDS = ("name", "label", "kind", "base_url", "method", "path", "headers", "secret_header",
-              "body_template", "response_path", "refusal", "model", "timeout_s", "secret", "updated_at")
+              "body_template", "response_path", "refusal", "model", "timeout_s", "secret", "updated_at",
+              "protocol_version")
 
     @classmethod
     def from_dict(cls, d: dict) -> "Descriptor":
@@ -122,7 +125,7 @@ class Descriptor:
 
 @dataclass
 class Answer:
-    text: str | None
+    text: Any                                # the answer: text, or JSON for structured systems
     refused: bool = False
     refusal_reason: str | None = None
     status: int | None = None
@@ -224,10 +227,46 @@ def _render_value(value: Any, input: str, history: list, params: dict) -> Any:
     return _PLACEHOLDER.sub(lambda m: str(lookup(m.group(1))), value)
 
 
-def render_request(d: Descriptor, input: str, history: list | None, params: dict) -> tuple[str, str, dict, bytes | None]:
+def _a2a_legacy(d: Descriptor) -> bool:
+    return (d.protocol_version or "1.0").startswith("0.")
+
+
+def _a2a_part(value: Any, legacy: bool) -> dict:
+    if isinstance(value, str):
+        return {"kind": "text", "text": value} if legacy else {"text": value}
+    return {"kind": "data", "data": value} if legacy else {"data": value}
+
+
+def a2a_request(d: Descriptor, method: str, params: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params}
+
+
+def render_request(d: Descriptor, input: Any, history: list | None, params: dict) -> tuple[str, str, dict, bytes | None]:
     """(method, url, headers, body) for one call."""
     history = list(history or [])
     headers = {"Content-Type": "application/json", "Accept": "application/json", **(d.headers or {})}
+    if d.kind in ("a2a", "oip") and d.secret and not d.secret_header:
+        headers["Authorization"] = f"Bearer {d.secret}"
+    if d.kind == "a2a":
+        if history:
+            raise EndpointError(f"{d.label}: an A2A agent keeps its own context; a history cannot be sent to it")
+        legacy = _a2a_legacy(d)
+        url = d.base_url.rstrip("/") + ("/" + d.path.lstrip("/") if d.path else "")
+        message = {"messageId": uuid.uuid4().hex, "role": "user" if legacy else "ROLE_USER",
+                   "parts": [_a2a_part(input, legacy)]}
+        if legacy:
+            message["kind"] = "message"
+        else:
+            headers["A2A-Version"] = d.protocol_version or "1.0"
+        body: Any = a2a_request(d, "message/send" if legacy else "SendMessage", {"message": message})
+        return "POST", url, headers, json.dumps(body).encode()
+    if d.kind == "oip":
+        url = d.base_url.rstrip("/") + f"/v2/models/{urllib.parse.quote(d.model or d.name)}/infer"
+        if d.body_template is not None:
+            body = _render_value(d.body_template, input, history, params)
+        else:
+            body = {"inputs": [{"name": "input", "shape": [1], "datatype": "BYTES", "data": [input]}]}
+        return "POST", url, headers, json.dumps(body).encode()
     if d.kind == "openai":
         url = d.base_url.rstrip("/") + "/chat/completions"
         body: Any = {"model": d.model, "messages": history + [{"role": "user", "content": input}], **params}
@@ -271,7 +310,85 @@ def _refusal_of(d: Descriptor, status: int, payload: Any) -> str | None:
         return ""
 
 
-def call(d: Descriptor, input: str, history: list | None = None, params: dict | None = None,
+_A2A_DONE = {"TASK_STATE_COMPLETED": "completed", "completed": "completed",
+             "TASK_STATE_REJECTED": "rejected", "rejected": "rejected",
+             "TASK_STATE_SUBMITTED": "working", "TASK_STATE_WORKING": "working", "submitted": "working", "working": "working"}
+
+
+def _parts_value(parts: list | None) -> Any:
+    """Text parts joined; else the first data part's value; else None."""
+    parts = parts or []
+    texts = [p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
+    if texts:
+        return "".join(texts)
+    for p in parts:
+        if isinstance(p, dict) and "data" in p:
+            return p["data"]
+    return None
+
+
+def _a2a_outcome(d: Descriptor, result: Any) -> tuple[str, Any]:
+    """("answer", value) | ("refused", reason) | ("working", task id), else raise."""
+    if not isinstance(result, dict):
+        raise EndpointBadResponse(f"{d.label}: the A2A result is not an object")
+    if "message" in result and "task" not in result and result.get("kind") != "task":
+        message = result["message"] if isinstance(result["message"], dict) else {}
+        return "answer", _parts_value(message.get("parts"))
+    if result.get("kind") == "message" or ("parts" in result and "status" not in result):
+        return "answer", _parts_value(result.get("parts"))
+    task = result.get("task", result)
+    status = task.get("status") or {}
+    state = status.get("state")
+    outcome = _A2A_DONE.get(state)
+    status_text = _parts_value((status.get("message") or {}).get("parts"))
+    if outcome == "completed":
+        for artifact in task.get("artifacts") or []:
+            value = _parts_value(artifact.get("parts"))
+            if value is not None:
+                return "answer", value
+        return "answer", status_text
+    if outcome == "rejected":
+        return "refused", status_text or ""
+    if outcome == "working":
+        return "working", task.get("id")
+    raise EndpointBadResponse(f"{d.label}: the A2A task ended in {state}")
+
+
+def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts) -> Any:
+    guard_url(url, allowed_hosts)
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
+    try:
+        with _OPENER.open(req, timeout=d.timeout_s) as resp:
+            return json.loads(resp.read() or b"null")
+    except urllib.error.HTTPError as exc:
+        raise EndpointBadResponse(f"{d.label}: the agent answered {exc.code} while polling") from None
+    except (urllib.error.URLError, TimeoutError, socket.timeout, _Redirected):
+        raise EndpointTimeout(f"{d.label}: the agent did not answer while polling") from None
+
+
+def _a2a_answer(d: Descriptor, payload: Any, url: str, headers: dict, allowed_hosts, sleep, status: int,
+                latency: int) -> Answer:
+    deadline = time.monotonic() + d.timeout_s
+    while True:
+        if not isinstance(payload, dict):
+            raise EndpointBadResponse(f"{d.label}: not a JSON-RPC response")
+        if payload.get("error"):
+            err = payload["error"]
+            raise EndpointBadResponse(f"{d.label}: the agent answered a JSON-RPC error: {err.get('message', err)}")
+        kind, value = _a2a_outcome(d, payload.get("result"))
+        if kind == "answer":
+            return Answer(text=value, status=status, latency_ms=latency)
+        if kind == "refused":
+            return Answer(text=None, refused=True, refusal_reason=value, status=status, latency_ms=latency)
+        if time.monotonic() >= deadline or not value:
+            raise EndpointTimeout(f"{d.label}: the A2A task was still working after {d.timeout_s}s")
+        sleep(1)
+        legacy = _a2a_legacy(d)
+        payload = _post_json(d, url, headers, a2a_request(d, "tasks/get" if legacy else "GetTask", {"id": value}),
+                             allowed_hosts)
+
+
+def call(d: Descriptor, input: Any, history: list | None = None, params: dict | None = None,
          allowed_hosts: list[str] | None = None, sleep: Callable[[float], None] = time.sleep,
          waits: tuple = RETRY_WAITS) -> Answer:
     """One question to the system, with the retries (``waits``: seconds before each retry; ``()``
@@ -314,8 +431,13 @@ def call(d: Descriptor, input: str, history: list | None = None, params: dict | 
                 raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)")
             if 400 <= status < 500:
                 raise EndpointBadResponse(f"{d.label}: the system answered {status}")
+            if status < 300 and d.kind == "a2a":
+                return _a2a_answer(d, payload, url, headers,
+                                   allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),
+                                   sleep, status, latency)
             if status < 300:
-                path = "choices[0].message.content" if d.kind == "openai" else d.response_path
+                path = {"openai": "choices[0].message.content", "oip": d.response_path or "outputs[0].data[0]"}.get(
+                    d.kind, d.response_path)
                 try:
                     return Answer(text=extract(payload, path), status=status, latency_ms=latency)
                 except KeyError:
@@ -358,8 +480,9 @@ class EndpointClient:
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
         return cls(Descriptor.from_dict(data), plugin=plugin, **kwargs)
 
-    def ask(self, input: str, history: list | None = None, **params) -> Answer:
-        """Send ``input`` (after ``history``, a list of {"role", "content"} turns) and return the answer."""
+    def ask(self, input: Any, history: list | None = None, **params) -> Answer:
+        """Send ``input`` (text, or a JSON object/list for a structured system) after ``history`` (a list of
+        {"role", "content"} turns) and return the answer."""
         answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep)
         self._record()
         return answer

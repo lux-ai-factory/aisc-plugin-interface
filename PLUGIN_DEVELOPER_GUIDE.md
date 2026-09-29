@@ -422,9 +422,38 @@ The easiest way to test a plugin is to decouple the concerns.
 ## 13. Calling a System Under Test (Manage → Connections)
 
 A project admin registers the AI systems the project assesses over the network under **Manage →
-Connections** on the project page: an OpenAI-compatible endpoint, or any REST API with a request
-template. An evaluation binds one as a `resource` input. To support it, declare the input and ask
-the client for the answer:
+Connections** on the project page: an OpenAI-compatible endpoint, an A2A agent, an Open Inference
+Protocol (KServe V2) model server, or any REST API with a request template. An evaluation binds one
+as a `resource` input. There are two ways to support it.
+
+### 13.1 A tool that already speaks a standard protocol
+
+Most tools already call a system their own way: an OpenAI client, an A2A client, an OIP client.
+Declare which protocol(s) the tool speaks and where it takes the endpoint, and the tool is pointed at
+the platform, which translates to whatever the connection is:
+
+```python
+from aisc_plugin_interface.system_under_test import system_under_test
+
+
+@system_under_test(protocols=("openai",),
+                   fields={"target.base_url": "base_url", "target.api_key": "api_key", "target.model": "model"})
+class MyPlugin(BaseEvaluationPlugin[MyConfig]):
+    def evaluate(self, config_data):
+        ...   # config_data["target"] now points at the system under test
+```
+
+This adds the `system` input. When a run has a connection bound, the platform issues the run a key
+for it (valid 12 hours, stored hashed) and the declared config fields (dotted for nesting) and/or
+environment variables (`env={"OPENAI_BASE_URL": "base_url"}`, set for the run only) are filled for the
+first protocol listed. Roles: `aisc` has `ask_url`, `api_key`; `openai` and `oip` have `base_url`,
+`model`, `api_key`; `a2a` has `agent_card_url`, `rpc_url`, `api_key`. Only fill what reaches the
+system under test: a tool that also uses an LLM as a judge must keep that client on its own key.
+`required=False` makes the input optional; the tool then runs unchanged when none is bound.
+
+### 13.2 A tool written for AISC
+
+Declare the input and ask the client for the answer:
 
 ```python
 from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input
