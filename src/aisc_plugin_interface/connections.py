@@ -106,10 +106,12 @@ class Descriptor:
     secret: str | None = None
     updated_at: str | None = None
     protocol_version: str | None = None      # a2a: "1.0" (default) or "0.3"
+    #: the assessment target this is the endpoint of (targets plan v2): key, kind, label, ...
+    target: dict | None = None
 
     FIELDS = ("name", "label", "kind", "base_url", "method", "path", "headers", "secret_header",
               "body_template", "response_path", "refusal", "model", "timeout_s", "secret", "updated_at",
-              "protocol_version")
+              "protocol_version", "target")
 
     @classmethod
     def from_dict(cls, d: dict) -> "Descriptor":
@@ -472,14 +474,29 @@ class EndpointClient:
         self._recorded = False
 
     @classmethod
+    def for_target(cls, plugin, input_name: str = "target", **kwargs) -> "EndpointClient":
+        """The endpoint of the target this run assesses (targets plan v2), through the platform."""
+        from aisc_plugin_interface.targets import target_of
+
+        found = target_of(plugin, input_name)
+        if found is None:
+            raise BadReference(f"input {input_name!r} is not bound to a target")
+        return cls._resolved(plugin, found["pid"], f"targets/{urllib.parse.quote(found['key'], safe=':')}/connection",
+                             found["key"], **kwargs)
+
+    @classmethod
     def for_input(cls, plugin, input_name: str, **kwargs) -> "EndpointClient":
         """Resolve the connection a plugin's resource input refers to, through the platform."""
         pid, name = reference_of(plugin, input_name)
+        return cls._resolved(plugin, pid, f"connections/{urllib.parse.quote(name)}", name, **kwargs)
+
+    @classmethod
+    def _resolved(cls, plugin, pid: str, path: str, name: str, **kwargs) -> "EndpointClient":
         base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
         token = os.environ.get("PLATFORM_CONNECTIONS_TOKEN") or ""
         if not base or not token:
             raise EndpointError("PLATFORM_URL and PLATFORM_CONNECTIONS_TOKEN must be set to resolve a connection")
-        req = urllib.request.Request(f"{base}/internal/projects/{urllib.parse.quote(pid)}/connections/{urllib.parse.quote(name)}",
+        req = urllib.request.Request(f"{base}/internal/projects/{urllib.parse.quote(pid)}/{path}",
                                      headers={"X-AISC-Service-Token": token, "Accept": "application/json"})
         try:
             with _OPENER.open(req, timeout=30) as resp:

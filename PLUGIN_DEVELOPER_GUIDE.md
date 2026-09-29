@@ -443,13 +443,18 @@ class MyPlugin(BaseEvaluationPlugin[MyConfig]):
         ...   # config_data["target"] now points at the system under test
 ```
 
-This adds the `system` input. When a run has a connection bound, the platform issues the run a key
-for it (valid 12 hours, stored hashed) and the declared config fields (dotted for nesting) and/or
+This adds the `target` input: what the evaluation assesses, the system or one component of its AI
+card. When a run has a target with an endpoint, the platform issues the run a key for that endpoint (valid 12 hours, stored hashed) and the declared config fields (dotted for nesting) and/or
 environment variables (`env={"OPENAI_BASE_URL": "base_url"}`, set for the run only) are filled for the
 first protocol listed. Roles: `aisc` has `ask_url`, `api_key`; `openai` and `oip` have `base_url`,
 `model`, `api_key`; `a2a` has `agent_card_url`, `rpc_url`, `api_key`. Only fill what reaches the
 system under test: a tool that also uses an LLM as a judge must keep that client on its own key.
 `required=False` makes the input optional; the tool then runs unchanged when none is bound.
+
+Every evaluation in the Configurator names its target, whether or not the tool calls a system:
+the engine adds a required `target` input to every plugin's form, and results are joined to it. A
+plugin can read it with `aisc_plugin_interface.targets.target_of(self)` when it declares the input
+(the decorator does); `EndpointClient.for_target(self)` reaches that target's endpoint.
 
 ### 13.2 A tool written for AISC
 

@@ -31,10 +31,13 @@ import urllib.request
 from typing import Any
 
 from aisc_plugin_interface.connections import BadReference, reference_of
+from aisc_plugin_interface.targets import is_target, parse_target
 from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
 from aisc_plugin_interface.models.evaluation_input import InputType
 
-SYSTEM_INPUT = "system"
+#: The evaluation's target (targets plan v2): the system, or one of its AI card's components. A
+#: `connection:<pid>/<name>` value (a connection picked before targets) is still honoured.
+SYSTEM_INPUT = "target"
 
 ROLES = {
     "aisc": ("ask_url", "api_key"),
@@ -46,7 +49,8 @@ ROLES = {
 
 def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, str] | None = None,
                       env: dict[str, str] | None = None, required: bool = True,
-                      input_name: str = SYSTEM_INPUT, label: str = "System under test"):
+                      input_name: str = SYSTEM_INPUT,
+                      label: str = "Target of the assessment (the system, or one of its components)"):
     """See the module. ``fields`` maps a config field (dotted for nesting) to a role, ``env`` an
     environment variable to a role; the roles must be ones the first protocol has."""
     protocols = tuple(protocols)
@@ -71,18 +75,27 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
                 if required:
                     raise ValueError(f"no system under test: bind a connection to input {input_name!r}")
                 return original(self, config_data)
+            payload = self.get_input_data(input_name)
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            legacy = None
             try:
-                pid, name = reference_of(self, input_name)
+                if is_target(value):
+                    pid, key = parse_target(value)
+                    issued = _issue_run_key(pid, f"targets/{urllib.parse.quote(key, safe=':')}", key)
+                else:
+                    pid, legacy = reference_of(self, input_name)
+                    issued = _issue_run_key(pid, f"connections/{urllib.parse.quote(legacy)}", legacy)
             except BadReference as exc:
                 raise ValueError(f"system under test: {exc}") from None
-            issued = _issue_run_key(pid, name)
+            name = issued.get("connection") or legacy or "system"
             endpoint = issued["endpoints"][first]
             values = {**endpoint, "api_key": issued["key"]}
             config = copy.deepcopy(config_data) if config_data is not None else {}
             for field, role in fields.items():
                 _set_dotted(config, field, values[role])
             self.upload_artifact(f"connection-{name}.json", json.dumps({
-                "connection": f"connection:{pid}/{name}", "protocol": first, "endpoint": endpoint,
+                "connection": f"connection:{pid}/{name}", "target": issued.get("target"),
+                "protocol": first, "endpoint": endpoint,
                 "expires_at": issued.get("expires_at"), "fields": sorted(fields), "env": sorted(env)},
                 indent=2).encode())
             before = {var: os.environ.get(var) for var in env}
@@ -103,19 +116,26 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
     return decorator
 
 
-def _issue_run_key(pid: str, name: str) -> dict:
+def _issue_run_key(pid: str, path: str, name: str) -> dict:
+    """A run key from the platform; `path` is `targets/<key>` or, for a legacy value,
+    `connections/<name>`. The platform's reason is passed on when it refuses."""
     base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
     token = os.environ.get("PLATFORM_CONNECTIONS_TOKEN") or ""
     if not base or not token:
         raise RuntimeError("PLATFORM_URL and PLATFORM_CONNECTIONS_TOKEN must be set to reach a system under test")
     req = urllib.request.Request(
-        f"{base}/internal/projects/{urllib.parse.quote(pid)}/connections/{urllib.parse.quote(name)}/run-keys",
+        f"{base}/internal/projects/{urllib.parse.quote(pid)}/{path}/run-keys",
         data=b"", method="POST", headers={"X-AISC-Service-Token": token, "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"the platform refused a run key for connection {name!r} ({exc.code})") from None
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except ValueError:
+            detail = None
+        reason = f": {detail}" if isinstance(detail, str) and detail else f" ({exc.code})"
+        raise RuntimeError(f"the platform refused a run key for {name!r}{reason}") from None
     except (urllib.error.URLError, TimeoutError):
         raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
 
