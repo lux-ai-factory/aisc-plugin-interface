@@ -112,3 +112,23 @@ def test_pi3_the_target_is_part_of_what_the_connection_is():
     a = c.Descriptor.from_dict({**MCAS, "base_url": "http://x"})
     b = c.Descriptor.from_dict({**MCAS, "base_url": "http://x", "target": TARGET})
     assert b.public()["target"] == TARGET and a.fingerprint() != b.fingerprint()
+
+
+def test_pi5_an_optional_endpoint_lets_the_tool_run_as_configured_when_the_target_has_none(stub, monkeypatch):
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/run-keys", (404, {"detail": "Scoring model has no endpoint"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+
+    @system_under_test(protocols=("openai",), fields={"target.base_url": "base_url"}, required=False)
+    class Tool(BaseEvaluationPlugin):
+        def evaluate(self, config_data):
+            self.seen = config_data
+            return "done"
+
+    t = bound(Tool, f"target:{PID}/{KEY}")
+    assert t.evaluate({"x": 1}) == "done" and t.seen == {"x": 1}
+
+
+def test_pi5_the_declared_input_is_optional_so_standalone_forms_are_not_blocked():
+    # the engine makes it required in configurator mode (O2); the plugin itself stays usable without targets
+    assert [(d.name, d.required) for d in tool()().input_definitions] == [("target", False)]

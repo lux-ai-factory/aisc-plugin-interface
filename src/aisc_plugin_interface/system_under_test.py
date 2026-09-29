@@ -65,7 +65,10 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             raise ValueError(f"{target}: {role!r} is not a role of {first} ({', '.join(ROLES[first])})")
 
     def decorator(cls):
-        cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=required)(cls)
+        # Declared optional, so a form without targets (standalone) is not blocked; in the Configurator
+        # the engine makes every evaluation's target required (targets plan v2, O2). `required` is
+        # whether the tool needs the target's endpoint: without one, an optional tool runs as configured.
+        cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
         cls.system_under_test_protocols = protocols
         original = cls.evaluate
 
@@ -81,7 +84,12 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             try:
                 if is_target(value):
                     pid, key = parse_target(value)
-                    issued = _issue_run_key(pid, f"targets/{urllib.parse.quote(key, safe=':')}", key)
+                    try:
+                        issued = _issue_run_key(pid, f"targets/{urllib.parse.quote(key, safe=':')}", key)
+                    except NoEndpoint:
+                        if required:
+                            raise
+                        return original(self, config_data)
                 else:
                     pid, legacy = reference_of(self, input_name)
                     issued = _issue_run_key(pid, f"connections/{urllib.parse.quote(legacy)}", legacy)
@@ -116,6 +124,10 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
     return decorator
 
 
+class NoEndpoint(RuntimeError):
+    """The target has no endpoint (or is not a target of the project)."""
+
+
 def _issue_run_key(pid: str, path: str, name: str) -> dict:
     """A run key from the platform; `path` is `targets/<key>` or, for a legacy value,
     `connections/<name>`. The platform's reason is passed on when it refuses."""
@@ -135,7 +147,8 @@ def _issue_run_key(pid: str, path: str, name: str) -> dict:
         except ValueError:
             detail = None
         reason = f": {detail}" if isinstance(detail, str) and detail else f" ({exc.code})"
-        raise RuntimeError(f"the platform refused a run key for {name!r}{reason}") from None
+        error = NoEndpoint if exc.code == 404 else RuntimeError
+        raise error(f"the platform refused a run key for {name!r}{reason}") from None
     except (urllib.error.URLError, TimeoutError):
         raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
 

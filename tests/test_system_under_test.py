@@ -52,7 +52,8 @@ def bound(tool_cls, value=f"connection:{PID}/mcas-chat"):
 def test_s1_adds_the_system_resource_input_and_records_the_protocols():
     Tool = make(protocols=("openai", "a2a"), fields={"target.base_url": "base_url"})
     (d,) = [d for d in Tool().input_definitions if d.name == SYSTEM_INPUT]
-    assert d.input_type == InputType.RESOURCE and d.required is True
+    # declared optional: the Configurator engine makes it required (targets plan v2, O2)
+    assert d.input_type == InputType.RESOURCE and d.required is False
     assert Tool.system_under_test_protocols == ("openai", "a2a")
 
 
