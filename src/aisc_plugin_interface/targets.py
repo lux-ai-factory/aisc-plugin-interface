@@ -1,4 +1,4 @@
-"""What an evaluation assesses (targets plan v2, 2026-09-29).
+"""What an evaluation assesses.
 
 In the Configurator every evaluation names its target in its `target` input: the AI system, or one
 component of its AI card (a model, a rule engine, its training data, ...). The value is

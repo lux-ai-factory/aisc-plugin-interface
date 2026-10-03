@@ -1,4 +1,4 @@
-"""Connection kinds beyond openai and rest (connections plan, revision 3): an A2A agent (1.0, and the
+"""Connection kinds beyond openai and rest: an A2A agent (1.0, and the
 0.3 dialect) and an Open Inference Protocol model server; and structured input for predictive systems."""
 import json
 
@@ -17,7 +17,7 @@ def rpc(req):
     return json.loads(req["body"])
 
 
-# ── a2a 1.0 ─────────────────────────────────────────────────────────────────
+# a2a 1.0
 
 def test_a2a_sends_sendmessage_with_a_user_text_part_and_reads_the_message(stub):
     stub.route("/rpc", (200, lambda r: {"jsonrpc": "2.0", "id": rpc(r)["id"],
@@ -86,7 +86,7 @@ def test_a2a_refuses_a_history_because_the_agent_keeps_its_own_context(stub):
         client(stub, kind="a2a", path="/rpc").ask("q", history=[{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}])
 
 
-# ── a2a 0.3 dialect ─────────────────────────────────────────────────────────
+# a2a 0.3 dialect
 
 def test_a2a_0_3_uses_message_send_and_kind_parts(stub):
     stub.route("/rpc", (200, lambda r: {"jsonrpc": "2.0", "id": rpc(r)["id"],
@@ -108,7 +108,7 @@ def test_a2a_0_3_rejected_and_working_tasks(stub):
     assert a.refused and a.refusal_reason == "no" and rpc(stub.seen[-1])["method"] == "tasks/get"
 
 
-# ── oip ─────────────────────────────────────────────────────────────────────
+# oip
 
 def test_oip_sends_a_bytes_tensor_and_reads_the_first_output(stub):
     stub.route("/v2/models/scorer/infer", (200, {"model_name": "scorer", "id": "x",
@@ -135,7 +135,7 @@ def test_oip_an_error_object_is_a_bad_response(stub):
         client(stub, kind="oip", model="scorer").ask("x")
 
 
-# ── structured input for templated REST ─────────────────────────────────────
+# structured input for templated REST
 
 def test_rest_a_whole_value_placeholder_keeps_a_structured_input(stub):
     stub.route("/score", (200, {"recommendation": "Approve"}))

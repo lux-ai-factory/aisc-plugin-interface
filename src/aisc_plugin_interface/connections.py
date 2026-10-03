@@ -66,9 +66,8 @@ class EndpointBadResponse(EndpointError):
     """The system answered, but not with a usable answer."""
 
 
-# ── references ───────────────────────────────────────────────────────────────
-
 def parse_reference(value: Any) -> tuple[str, str]:
+    """(project pid, connection name) of a ``connection:<pid>/<name>`` value; BadReference otherwise."""
     if not isinstance(value, str) or not value.startswith(REFERENCE_PREFIX):
         raise BadReference(f"not a connection reference: {value!r}")
     pid, _, name = value[len(REFERENCE_PREFIX):].partition("/")
@@ -85,8 +84,6 @@ def reference_of(plugin, input_name: str) -> tuple[str, str]:
         raise BadReference(f"input {input_name!r} is not bound to a connection")
     return parse_reference(value)
 
-
-# ── the connection as the platform hands it over ─────────────────────────────
 
 @dataclass
 class Descriptor:
@@ -106,7 +103,7 @@ class Descriptor:
     secret: str | None = None
     updated_at: str | None = None
     protocol_version: str | None = None      # a2a: "1.0" (default) or "0.3"
-    #: the assessment target this is the endpoint of (targets plan v2): key, kind, label, ...
+    #: the assessment target this connection is the endpoint of (key, kind, label, ...)
     target: dict | None = None
 
     FIELDS = ("name", "label", "kind", "base_url", "method", "path", "headers", "secret_header",
@@ -133,8 +130,6 @@ class Answer:
     status: int | None = None
     latency_ms: int | None = None
 
-
-# ── outbound safety ──────────────────────────────────────────────────────────
 
 def allowed_hosts_from_env() -> list[str]:
     return [h.strip().lower() for h in (os.environ.get("CONNECTIONS_ALLOWED_HOSTS") or "").split(",") if h.strip()]
@@ -194,8 +189,6 @@ class _Redirected(Exception):
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
-
-# ── the request ──────────────────────────────────────────────────────────────
 
 def extract(obj: Any, path: str) -> Any:
     """``a.b[0].c`` on nested dicts and lists; KeyError when a step is missing."""
@@ -459,8 +452,6 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
         sleep(waits.pop(0))
 
 
-# ── the client a plugin uses ─────────────────────────────────────────────────
-
 class EndpointClient:
     """One system under test, for one plugin run."""
 
@@ -475,7 +466,7 @@ class EndpointClient:
 
     @classmethod
     def for_target(cls, plugin, input_name: str = "target", **kwargs) -> "EndpointClient":
-        """The endpoint of the target this run assesses (targets plan v2), through the platform."""
+        """Resolve the endpoint of the target this run assesses, through the platform."""
         from aisc_plugin_interface.targets import target_of
 
         found = target_of(plugin, input_name)

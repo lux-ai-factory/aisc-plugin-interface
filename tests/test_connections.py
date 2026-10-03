@@ -1,5 +1,5 @@
 """EndpointClient: one way for every plugin to call a system under test registered under Manage →
-Connections (connections plan 2026-09-29, tests I1 to I9)."""
+Connections."""
 import hashlib
 import json
 
@@ -27,7 +27,7 @@ def client(stub, plugin=None, **over):
     return c.EndpointClient(desc(stub, **over), plugin=plugin, allowed_hosts=[stub.host], sleep=lambda s: None)
 
 
-# ── I1 reference parsing ────────────────────────────────────────────────────
+# reference parsing
 
 def test_i1_a_reference_names_project_and_connection():
     assert c.parse_reference("connection:0f7c1e2a-aaaa-bbbb-cccc-1234567890ab/mcas-chat") == (
@@ -48,7 +48,7 @@ def test_i1_the_reference_is_read_from_a_resource_input(plugin, stub, monkeypatc
         c.reference_of(plugin({}), "system")
 
 
-# ── I2 resolving through the platform ───────────────────────────────────────
+# resolving through the platform
 
 def test_i2_for_input_resolves_through_the_internal_route_with_the_token(plugin, stub, monkeypatch, tmp_path):
     stub.route("/internal/projects/pid-1/connections/mcas-chat", (200, dict(MCAS, base_url=stub.base)))
@@ -80,7 +80,7 @@ def test_i2_a_refused_resolution_names_the_status(plugin, stub, monkeypatch):
         c.EndpointClient.for_input(plugin({"system": {"value": "connection:pid-1/x"}}), "system")
 
 
-# ── I3 openai kind ──────────────────────────────────────────────────────────
+# openai kind
 
 def test_i3_openai_sends_model_and_messages_and_reads_the_choice(stub):
     stub.route("/v1/chat/completions", (200, {"choices": [{"message": {"content": "No, it is not."}}]}))
@@ -96,7 +96,7 @@ def test_i3_openai_sends_model_and_messages_and_reads_the_choice(stub):
     assert a.text == "No, it is not." and not a.refused and a.status == 200
 
 
-# ── I4 rest kind ────────────────────────────────────────────────────────────
+# rest kind
 
 def test_i4_rest_renders_input_history_params_and_the_secret_header(stub):
     stub.route("/chat", (200, {"answer": "Yes (POL-FAIR-002)."}))
@@ -131,7 +131,7 @@ def test_i4_a_missing_answer_path_is_a_bad_response(stub):
         client(stub).ask("q", lang="en")
 
 
-# ── I5 refusals ─────────────────────────────────────────────────────────────
+# refusals
 
 def test_i5_a_declared_refusal_is_an_answer_not_an_error(stub):
     stub.route("/chat", (502, {"detail": {"error": "answer_not_grounded", "reason": "no clause covers it"}}))
@@ -147,7 +147,7 @@ def test_i5_the_same_status_without_the_match_is_an_error_after_retries(stub):
     assert len(stub.seen) == 3                                          # first try + 2 retries
 
 
-# ── I6 retries ──────────────────────────────────────────────────────────────
+# retries
 
 def test_i6_a_5xx_then_success_is_retried(stub):
     stub.route("/chat", (503, {"detail": "busy"}), (200, {"answer": "ok"}))
@@ -170,7 +170,7 @@ def test_i6_a_4xx_is_never_retried(stub):
     assert len(stub.seen) == 1
 
 
-# ── I7 error classes ────────────────────────────────────────────────────────
+# error classes
 
 @pytest.mark.parametrize("status,cls", [(401, c.EndpointAuthError), (403, c.EndpointAuthError), (404, c.EndpointNotFound)])
 def test_i7_auth_and_not_found(stub, status, cls):
@@ -193,7 +193,7 @@ def test_i7_an_error_message_never_carries_the_secret(stub):
     assert "s3cr3t-value" not in str(err.value)
 
 
-# ── I8 provenance ───────────────────────────────────────────────────────────
+# provenance
 
 def test_i8_the_first_call_uploads_what_was_assessed_once_without_the_secret(stub, plugin):
     stub.route("/chat", (200, {"answer": "ok"}))
@@ -211,7 +211,7 @@ def test_i8_the_first_call_uploads_what_was_assessed_once_without_the_secret(stu
     assert doc["first_call_at"]
 
 
-# ── I9 outbound safety ──────────────────────────────────────────────────────
+# outbound safety
 
 @pytest.mark.parametrize("url", [
     "http://127.0.0.1:9/x", "http://localhost/x", "http://10.1.2.3/x", "http://172.16.0.5/x",

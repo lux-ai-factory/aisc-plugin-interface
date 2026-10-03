@@ -1,4 +1,4 @@
-"""The network rule a run gets from the platform (allowlist task 2026-09-29, N1 to N6): the
+"""The network rule a run gets from the platform: the
 platform computes, per project, which internal hosts a connection may reach and which addresses
 are never reachable (the stack's own services, cloud metadata), and hands both to the client in
 the resolve response. The deny list holds on the resolved address, even for an allowed host, so
@@ -27,7 +27,7 @@ def resolving(monkeypatch, table):
     monkeypatch.setattr(socket, "getaddrinfo", fake)
 
 
-# ── N1 to N3 guard_url ──────────────────────────────────────────────────────
+# guard_url
 
 def test_n1_an_allowed_host_whose_address_is_denied_is_blocked():
     with pytest.raises(c.BlockedAddress, match="never"):
@@ -47,11 +47,11 @@ def test_n2_an_allowed_name_on_another_address_goes_through(monkeypatch):
 
 
 def test_n3_without_a_deny_list_an_allowed_host_is_not_resolved(monkeypatch):
-    resolving(monkeypatch, {})       # would fail to resolve: the old rule never asks
+    resolving(monkeypatch, {})       # would fail to resolve: an allowed host is not looked up
     c.guard_url("http://anything.internal:8500/chat", ["anything.internal:8500"])
 
 
-# ── N4 a call honours it before sending anything ────────────────────────────
+# a call honours the rule before sending anything
 
 def test_n4_a_denied_address_is_refused_before_any_request(stub):
     stub.route("/chat", (200, {"answer": "should not be asked"}))
@@ -67,7 +67,7 @@ def test_n4_the_client_passes_its_deny_list_on(stub):
         cl.ask("q")
 
 
-# ── N5 and N6 a run takes the rule from the platform, not from its own env ───
+# a run takes the rule from the platform, not from its own environment
 
 def _platform(stub, monkeypatch, network):
     stub.route("/internal/projects/pid-1/connections/mcas-chat", (200, dict(PLAIN, base_url=stub.base, **network)))

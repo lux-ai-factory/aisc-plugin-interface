@@ -1,4 +1,4 @@
-"""A plugin names what it assesses (targets plan v2, PI1 to PI4): the evaluation's `target` input
+"""A plugin names what it assesses: the evaluation's `target` input
 is `target:<platform pid>/<key>`, the system or one component of its AI card. A plugin whose tool
 calls a system reaches the endpoint of that target through the platform, and its record says both
 what it assessed and what it called."""
@@ -130,5 +130,5 @@ def test_pi5_an_optional_endpoint_lets_the_tool_run_as_configured_when_the_targe
 
 
 def test_pi5_the_declared_input_is_optional_so_standalone_forms_are_not_blocked():
-    # the engine makes it required in configurator mode (O2); the plugin itself stays usable without targets
+    # the engine makes it required in the Configurator; the plugin itself stays usable without targets
     assert [(d.name, d.required) for d in tool()().input_definitions] == [("target", False)]

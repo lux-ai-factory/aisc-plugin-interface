@@ -1,6 +1,6 @@
 """@system_under_test: a plugin declares which protocol(s) its tool speaks and which of its config
 fields or environment variables take the endpoint; with a connection bound, a run gets a key and the
-tool is pointed at the platform's endpoint for that protocol (connections plan, revision 3, S1 to S9)."""
+tool is pointed at the platform's endpoint for that protocol."""
 import json
 import os
 
@@ -47,12 +47,12 @@ def bound(tool_cls, value=f"connection:{PID}/mcas-chat"):
     return t
 
 
-# ── S1 the declaration ──────────────────────────────────────────────────────
+# the declaration
 
 def test_s1_adds_the_system_resource_input_and_records_the_protocols():
     Tool = make(protocols=("openai", "a2a"), fields={"target.base_url": "base_url"})
     (d,) = [d for d in Tool().input_definitions if d.name == SYSTEM_INPUT]
-    # declared optional: the Configurator engine makes it required (targets plan v2, O2)
+    # declared optional: the Configurator engine makes it required
     assert d.input_type == InputType.RESOURCE and d.required is False
     assert Tool.system_under_test_protocols == ("openai", "a2a")
 
@@ -75,7 +75,7 @@ def test_s1_a_bad_declaration_is_refused_when_the_class_is_made(bad):
         make(**bad)
 
 
-# ── S2 to S5 a run with a bound connection ──────────────────────────────────
+# a run with a bound connection
 
 def test_s2_fills_the_declared_fields_for_the_first_protocol(platform):
     t = bound(make(protocols=("openai",), fields={"target.base_url": "base_url", "target.api_key": "api_key",
@@ -131,7 +131,7 @@ def test_s5_records_what_the_run_was_pointed_at_without_the_key(platform):
     assert "aisc-run-abc" not in json.dumps(doc)
 
 
-# ── S6 to S9 no connection, and failures ────────────────────────────────────
+# no connection, and failures
 
 def test_s6_an_optional_input_left_unbound_runs_the_tool_unchanged(platform):
     t = bound(make(protocols=("openai",), fields={"base": "base_url"}, required=False), value=None)

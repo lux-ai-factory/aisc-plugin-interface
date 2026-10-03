@@ -63,8 +63,7 @@ class DataShape(BaseModel):
     @classmethod
     def from_payload(cls, data: dict | str | bytes) -> "DataShape":
         """
-        Convenience method to parse the DataShape from a dictionary, JSON string, or bytes.
-        Perfect for loading directly from project_settings payloads.
+        Parse a DataShape from a dict, a JSON string or bytes (such as a project setting's value).
         """
         if isinstance(data, (str, bytes)):
             return cls.model_validate_json(data)
@@ -78,11 +77,11 @@ class DataShape(BaseModel):
         return None
 
     def get_numeric_features(self) -> list[Feature]:
-        """Convenience method to get all numeric features."""
+        """All numeric features."""
         return [f for f in self.features if f.is_numeric]
 
     def get_categorical_features(self) -> list[Feature]:
-        """Convenience method to get all categorical features."""
+        """All categorical features."""
         return [f for f in self.features if f.is_categorical]
 
     def get_target_feature(self) -> Feature | None:

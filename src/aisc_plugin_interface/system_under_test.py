@@ -35,8 +35,8 @@ from aisc_plugin_interface.targets import is_target, parse_target
 from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
 from aisc_plugin_interface.models.evaluation_input import InputType
 
-#: The evaluation's target (targets plan v2): the system, or one of its AI card's components. A
-#: `connection:<pid>/<name>` value (a connection picked before targets) is still honoured.
+#: The evaluation's target: the system, or one of its AI card's components. A
+#: ``connection:<pid>/<name>`` value (a connection bound directly, without a target) is accepted too.
 SYSTEM_INPUT = "target"
 
 ROLES = {
@@ -51,8 +51,12 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
                       env: dict[str, str] | None = None, required: bool = True,
                       input_name: str = SYSTEM_INPUT,
                       label: str = "Target of the assessment (the system, or one of its components)"):
-    """See the module. ``fields`` maps a config field (dotted for nesting) to a role, ``env`` an
-    environment variable to a role; the roles must be ones the first protocol has."""
+    """Class decorator that points a tool at the run's system under test (see the module docstring).
+
+    ``fields`` maps a config field (dotted for nesting) to a role, ``env`` maps an environment variable
+    to a role; every role must belong to the first protocol. ``required`` says whether the tool needs
+    an endpoint: when it is False and no target or endpoint is bound, ``evaluate`` runs unchanged.
+    """
     protocols = tuple(protocols)
     fields, env = dict(fields or {}), dict(env or {})
     if not protocols or any(p not in ROLES for p in protocols):
@@ -65,9 +69,8 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             raise ValueError(f"{target}: {role!r} is not a role of {first} ({', '.join(ROLES[first])})")
 
     def decorator(cls):
-        # Declared optional, so a form without targets (standalone) is not blocked; in the Configurator
-        # the engine makes every evaluation's target required (targets plan v2, O2). `required` is
-        # whether the tool needs the target's endpoint: without one, an optional tool runs as configured.
+        # The input is declared optional so that a standalone form without targets is not blocked;
+        # inside the Configurator the engine makes every evaluation's target required.
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
         cls.system_under_test_protocols = protocols
         original = cls.evaluate
@@ -129,8 +132,8 @@ class NoEndpoint(RuntimeError):
 
 
 def _issue_run_key(pid: str, path: str, name: str) -> dict:
-    """A run key from the platform; `path` is `targets/<key>` or, for a legacy value,
-    `connections/<name>`. The platform's reason is passed on when it refuses."""
+    """Ask the platform for a run key; ``path`` is ``targets/<key>``, or ``connections/<name>`` for a
+    connection bound directly. When the platform refuses, its reason is passed on."""
     base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
     token = os.environ.get("PLATFORM_CONNECTIONS_TOKEN") or ""
     if not base or not token:

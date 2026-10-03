@@ -46,8 +46,8 @@ class PluginFeatureFlags(BaseModel):
 
 class BaseEvaluationPlugin[T: BaseModel](ABC):
     """
-    Abstract Base Class for evaluation plugins.
-    Plugins should inherit from this class and provide a Pydantic model for their configuration.
+    Base class for evaluation plugins.
+    A plugin inherits from it and gives the Pydantic model of its configuration form as ``T``.
 
     Example:
         class MyPlugin(BaseEvaluationPlugin[MyConfigModel]):
@@ -91,12 +91,12 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         If the class defines a `plugin_name` attribute, its value is returned.
         If not, the class's name (`cls.__name__`) is used as a fallback.
         """
-        # NOTE: use cls.plugin_name only if cls is direct subclass of BaseEvaluationPlugin
+        # A subclass of another plugin does not inherit its parent's plugin_name: it shows its own
+        # class name unless it sets plugin_name itself.
         plugin_name = cls.plugin_name
         default = cls.__name__
 
         if cls.is_direct_subclass():
-            # cls is a direct subclass of BaseInputProvider
             return plugin_name or default
         else:
             if plugin_name is None:
@@ -113,10 +113,7 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     @property
     def logger(self):
         """
-        Returns the cached logger for this plugin class.
-
-        The logger is shared across all instances of the class (per-class caching)
-        and named as "<module> - __name__".
+        Returns the logger of this plugin class, named "<module> - <class name>".
         """
         if self._logger is None:
             cls = self.__class__
@@ -221,8 +218,8 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         self, progress_callback: ProgressCallback | None
     ) -> None:
         """
-        Internal: called by the evaluation runtime (eval module) to feedback progress reporting.
-        Plugin implementations should not call or override this.
+        Internal: the evaluation runtime (the eval worker) sets where progress reports go.
+        Plugin implementations must not call or override this.
         """
         if progress_callback is not None and not callable(progress_callback):
             raise TypeError("Progress sink must be callable or None")
@@ -231,8 +228,8 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     @final
     def report_progress(self, task_progress: TaskProgress) -> None:
         """
-        Public, stable API for plugin authors.
-        No-op if no sink is configured by the evaluation runtime.
+        Report progress to the evaluation runtime.
+        Does nothing when the runtime has set no progress callback.
         """
         if self._progress_callback is None:
             return
@@ -283,7 +280,8 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     @final
     def upload_artifact(self, name: str, content: bytes) -> None:
         """
-        Public API for plugin authors to upload arbitrary files.
+        Upload a file as an artifact of the run.
+        Without an artifact callback (outside a run) the file is dropped with a warning.
         """
         if self._artifact_callback:
             self._artifact_callback(name, content)
@@ -294,7 +292,7 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
 
     def set_input_content(self, name: str, file_content: bytes | None) -> None:
         """
-        Called by the runtime. Instantiates the provider mapped via @input.
+        Called by the runtime. Instantiates the provider declared with @evaluation_input.
         """
         provider_cls = self._input_provider_types.get(name)
         if provider_cls and file_content is not None:
@@ -411,18 +409,17 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         return form_schema.model_dump()
 
     def get_full_schema(self) -> Tuple[dict, dict]:
-        """Helper to get the fresh, static baseline."""
+        """Return the config form's JSON schema and UI schema, as declared."""
         return self.get_config_form_schema(), self.get_config_form_ui_schema()
 
-    # form_data passed here may be incomplete, so we don't validate and use MyConfigModel
-    # It is the developer's responsibility to check for and use data accordingly here
+    # form_data may be incomplete, so it is not validated against the config model:
+    # an override must check the fields it uses.
     def on_config_change(self, form_data: T | None) -> Tuple[T | None, dict, dict]:
         """
         Hook called whenever the user changes a form value.
         Allows the plugin to dynamically update the schema (e.g. drop downs),
         the data (e.g. auto-fill), or the UI (e.g. hide fields).
         """
-        # Default: Do nothing, just return what came in
         schema, ui_schema = self.get_full_schema()
         return form_data, schema, ui_schema
 
@@ -449,7 +446,7 @@ class ProgressBar(Generic[Item]):
         plugin: Receives progress reports (must implement `report_progress`).
         total: Length of iteration (inferred if not given).
         desc: Progress label.
-        start: Enumeration start index (min 1 if negative).
+        start: Enumeration start index.
         with_index: Yield (index, item) pairs if True.
         extra: Extra fields for progress payloads.
     """
@@ -468,7 +465,6 @@ class ProgressBar(Generic[Item]):
         self._start = start
         self._with_index = with_index
 
-        # infer total if not provided
         if total is None:
             if isinstance(iterable, Sized):
                 total = len(iterable)
@@ -482,10 +478,8 @@ class ProgressBar(Generic[Item]):
 
         self._report_progress = getattr(plugin, "report_progress", None)
 
-        # prepare enumerate on iterable with correct start index
         self._enumerated_iter = enumerate(iterable, start=self._start)
 
-        # start emitting at 0
         self.emit(0)
 
     @property
