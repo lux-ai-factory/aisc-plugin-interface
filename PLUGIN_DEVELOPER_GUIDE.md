@@ -367,7 +367,14 @@ on the execution page. Every plugin follows the same rules:
 
 1. **Declare how the plugin gets what it assesses**, with exactly one of:
    - `@system_under_test(...)`: it calls its target, only through the target's endpoint (13.1, 13.2);
-   - `@assesses_inputs()`: it only reads its inputs (datasets, models, files) and calls no system.
+   - `@assesses_inputs()`: it only reads its inputs (datasets, models, files) and calls no system;
+   - `@dataset_through_target(datasets=("reference-dataset", ...))`: it analyses tables, and each row is
+     first sent through the target's endpoint, whose answer becomes columns `target.<field>` (a refusal
+     `target.refused` and `target.refusal_reason`, a failed call `target.error`). The plugin reads the
+     enriched table like an upload; the answers are saved as `target-answers-<dataset>.csv`. The run
+     settings `target_calls_at_once` (default 1) and `target_row_limit` (0: every row) are read from
+     the plugin's config when its form has them. Which fields of a row are sent is the endpoint's
+     business: its body template (`{{input}}` sends the whole row).
 
    `target_access_of(cls)` reads the declaration; `scripts/verify-plugins.sh` fails a plugin with none.
 2. **Never take the target from the form.** With a target bound, its address, key and model come from

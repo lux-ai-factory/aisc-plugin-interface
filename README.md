@@ -42,7 +42,7 @@ Main parts of `src/aisc_plugin_interface/`:
 | `models/` | `Measure`, `MetricVisualization`, `TaskProgress`, `InputDefinition`, `DataShape`, `LLMConfig`, `ResourceConfig`, ... |
 | `input_providers/` | readers that turn input bytes into Python objects: CSV, JSON, Parquet (needs pandas), ONNX (needs onnxruntime) |
 | `connections.py` | `EndpointClient`: call a system registered under Manage, Connections (OpenAI-compatible, REST, A2A, Open Inference Protocol) |
-| `system_under_test.py` | how a plugin gets what it assesses: `@system_under_test` (a target through its Manage endpoint, with `needs=`) or `@assesses_inputs`; the rules are in PLUGIN_DEVELOPER_GUIDE.md section 13 |
+| `system_under_test.py` | how a plugin gets what it assesses: `@system_under_test` (a target through its Manage endpoint, with `needs=`), `@assesses_inputs`, or `@dataset_through_target` (each row of a table through the target first); the rules are in PLUGIN_DEVELOPER_GUIDE.md section 13 |
 | `targets.py` | the evaluation's `target` input (`target:<project pid>/<key>`): the AI system or one component of its AI card |
 | `model_listing.py` | `list_openai_models`: list the models of an OpenAI-compatible endpoint |
 | `cli.py`, `templates/` | the `aisc-plugin-interface init-plugin` command |

@@ -54,7 +54,8 @@ CARRIED_BY_DEFAULT = ("text", "history")
 
 def target_access_of(cls) -> str | None:
     """How a plugin class gets what it assesses: "endpoint" (@system_under_test), "inputs"
-    (@assesses_inputs), or None when it declares nothing (the conformance check fails it)."""
+    (@assesses_inputs), "dataset_through_target" (@dataset_through_target), or None when it declares
+    nothing (the conformance check fails it)."""
     return getattr(cls, "target_access", None)
 
 
@@ -63,7 +64,8 @@ def assesses_inputs():
     live system: nothing changes at run time, the declaration is what the conformance check reads."""
     def decorator(cls):
         if target_access_of(cls) not in (None, "inputs"):
-            raise ValueError(f"{cls.__name__}: declare one of @system_under_test or @assesses_inputs, not both")
+            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
+                             " @dataset_through_target, not two")
         cls.target_access = "inputs"
         return cls
     return decorator
@@ -98,7 +100,8 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
 
     def decorator(cls):
         if target_access_of(cls) not in (None, "endpoint"):
-            raise ValueError(f"{cls.__name__}: declare one of @system_under_test or @assesses_inputs, not both")
+            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
+                             " @dataset_through_target, not two")
         cls.target_access = "endpoint"
         cls.system_under_test_needs = needs
         # The input is declared optional so that a standalone form without targets is not blocked;
@@ -199,3 +202,117 @@ def _set_dotted(config: dict, path: str, value: Any) -> None:
     for key in parents:
         node = node.setdefault(key, {})
     node[leaf] = value
+
+
+#: the run settings @dataset_through_target reads from a plugin's config, when its form has them
+CALLS_AT_ONCE, ROW_LIMIT = "target_calls_at_once", "target_row_limit"
+PREFIX = "target."
+
+
+def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: str = SYSTEM_INPUT,
+                           label: str = "Target of the assessment (the system, or one of its components)"):
+    """Class decorator for a plugin that analyses tables: before ``evaluate``, every row of each named
+    dataset input is sent to the evaluation's target, through its endpoint (the row as the request's
+    ``{{input}}``), and each scalar field of the answer is added to the row as ``target.<field>`` (a text
+    answer as ``target.answer``; a refusal as ``target.refused`` and ``target.refusal_reason``; a failed
+    call as ``target.error``). The plugin then reads the enriched table as if it had been uploaded so.
+
+    Run settings, read from the plugin's config when its form has them: ``target_calls_at_once``
+    (default 1) and ``target_row_limit`` (default 0: every row). The answers are saved with the run as
+    ``target-answers-<dataset>.csv``. A run without a target that has an endpoint is refused before the
+    plugin starts.
+    """
+    datasets = tuple(datasets)
+    if not datasets:
+        raise ValueError("datasets: name at least one dataset input")
+
+    def decorator(cls):
+        if target_access_of(cls) not in (None, "dataset_through_target"):
+            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
+                             " @dataset_through_target, not two")
+        cls.target_access = "dataset_through_target"
+        cls.dataset_through_target_inputs = datasets
+        cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
+        original = cls.evaluate
+
+        @functools.wraps(original)
+        def evaluate(self, config_data: dict) -> Any:
+            from aisc_plugin_interface.connections import EndpointClient
+            if self.get_input_data(input_name) is None:
+                raise ValueError("no target: this plugin sends its datasets through the evaluation's target,"
+                                 " which needs an endpoint (Manage, Targets and endpoints)")
+            client = EndpointClient.for_target(self, input_name)
+            settings = config_data or {}
+            at_once = max(1, int(settings.get(CALLS_AT_ONCE) or 1))
+            limit = max(0, int(settings.get(ROW_LIMIT) or 0))
+            for name in datasets:
+                table = self.get_input_data(name)
+                if table is None:
+                    continue
+                enriched = _through(client, table, at_once, limit)
+                self.set_input_content(name, enriched)
+                self.upload_artifact(f"target-answers-{name}.csv", enriched)
+            return original(self, config_data)
+
+        cls.evaluate = evaluate
+        return cls
+
+    return decorator
+
+
+def _rows(table) -> list[dict]:
+    if hasattr(table, "to_dict"):                              # a pandas DataFrame
+        return table.to_dict(orient="records")
+    if isinstance(table, list) and all(isinstance(r, dict) for r in table):
+        return [dict(r) for r in table]
+    raise ValueError("@dataset_through_target needs a table: a pandas DataFrame or a list of rows")
+
+
+def _plain(value):
+    """A JSON value for a cell: numpy numbers as Python numbers, NaN as null."""
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and value != value:
+        return None
+    return value
+
+
+def _answer_columns(answer) -> dict:
+    out = {PREFIX + "refused": bool(answer.refused)}
+    if answer.refused:
+        out[PREFIX + "refusal_reason"] = answer.refusal_reason
+    elif isinstance(answer.text, dict):
+        out.update({PREFIX + k: v for k, v in answer.text.items() if isinstance(v, (str, int, float, bool)) or v is None})
+    else:
+        out[PREFIX + "answer"] = answer.text
+    return out
+
+
+def _through(client, table, at_once: int, limit: int) -> bytes:
+    """The table with the target's answer to each row, as CSV."""
+    import csv
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+    from aisc_plugin_interface.connections import EndpointError
+
+    rows = _rows(table)
+    if limit:
+        rows = rows[:limit]
+
+    def one(row):
+        try:
+            return _answer_columns(client.ask({k: _plain(v) for k, v in row.items()}))
+        except EndpointError as exc:
+            return {PREFIX + "refused": False, PREFIX + "error": str(exc)}
+
+    with ThreadPoolExecutor(max_workers=at_once) as pool:
+        answers = list(pool.map(one, rows))
+    if rows and all(PREFIX + "error" in a for a in answers):
+        raise RuntimeError(f"the target answered none of the {len(rows)} rows: {answers[0][PREFIX + 'error']}")
+    merged = [{**{k: _plain(v) for k, v in row.items()}, **answer} for row, answer in zip(rows, answers)]
+    columns = list(dict.fromkeys(k for r in merged for k in r))
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    writer.writerows(merged)
+    return buffer.getvalue().encode()
