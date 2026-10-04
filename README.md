@@ -68,8 +68,13 @@ that needs them installs from git:
 uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch feat/unified-modules
 ```
 
-The `version` in this branch's `pyproject.toml` still reads 0.2.6, so a version constraint such as
+This branch's `pyproject.toml` reads 0.2.7, below PyPI's 0.3.0, so a version constraint such as
 `>=0.3.0` is not met by a git install of this branch; constrain on the git source instead.
+
+A plugin's evaluation run installs the plugin and its dependencies into a fresh environment, from
+PyPI and the stack's package index (devpi). `plugin-publisher` publishes this library to that index
+too, and uv takes a package from the first index that has it, the extra index (devpi) first: so a
+run gets this branch's library, not PyPI's, whatever the version numbers say.
 
 ### Inside the AISC stack
 
