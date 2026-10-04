@@ -279,3 +279,19 @@ def test_a_response_path_of_dollar_is_the_whole_answer(path):
 
 def test_dollar_dot_starts_a_path_too():
     assert c.extract({"detail": {"reason": "no clause"}}, "$.detail.reason") == "no clause"
+
+
+@pytest.mark.parametrize("status, kind", [(422, c.EndpointBadResponse), (403, c.EndpointAuthError), (404, c.EndpointNotFound)])
+def test_a_failed_call_carries_the_status_the_system_answered(stub, status, kind):
+    """The platform's Test tells "reached, but it wants another input" (a 4xx) from "not reached" without
+    reading messages."""
+    stub.route("/chat", (status, {"detail": "no"}))
+    with pytest.raises(kind) as exc:
+        client(stub).ask("q", lang="en")
+    assert exc.value.status == status
+
+
+def test_a_failure_without_an_answer_has_no_status(stub):
+    with pytest.raises(c.EndpointError) as exc:
+        c.call(desc(stub, base_url="http://127.0.0.1:9"), "q", waits=(), allowed_hosts=["127.0.0.1:9"])
+    assert exc.value.status is None

@@ -39,7 +39,12 @@ RETRY_WAITS = (1, 3)                       # seconds before the 2nd and the 3rd 
 
 
 class EndpointError(RuntimeError):
-    """A connection could not be used. The message never carries the key."""
+    """A connection could not be used. The message never carries the key; ``status`` is the HTTP status the
+    system answered with, or None when it did not answer (unreachable, timed out, refused by the rules)."""
+
+    def __init__(self, message: str = "", status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class BadReference(EndpointError):
@@ -434,13 +439,13 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if reason is not None:
                 return Answer(text=None, refused=True, refusal_reason=reason, status=status, latency_ms=latency)
             if status in (401, 403):
-                raise EndpointAuthError(f"{d.label}: the system refused the credentials ({status})")
+                raise EndpointAuthError(f"{d.label}: the system refused the credentials ({status})", status=status)
             if status == 404:
-                raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)")
+                raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)", status=404)
             if 400 <= status < 500:
                 # the system's own reason, a short excerpt with the key taken out: without it a 422 is a guess
                 said = _scrub((raw or b"").decode("utf-8", errors="replace")[:300], d.secret)
-                raise EndpointBadResponse(f"{d.label}: the system answered {status}: {said}")
+                raise EndpointBadResponse(f"{d.label}: the system answered {status}: {said}", status=status)
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
                                    allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),
@@ -452,7 +457,7 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
                     return Answer(text=extract(payload, path), status=status, latency_ms=latency)
                 except KeyError:
                     raise EndpointBadResponse(f"{d.label}: no answer at {path!r} in the response") from None
-            retryable = EndpointBadResponse(f"{d.label}: the system answered {status}")
+            retryable = EndpointBadResponse(f"{d.label}: the system answered {status}", status=status)
         if not waits:
             raise retryable
         sleep(waits.pop(0))
