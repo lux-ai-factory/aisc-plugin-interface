@@ -16,7 +16,7 @@ PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
 KEY = "component:0b9c7a1e-0000-4000-8000-000000000002"
 SCORER = {"name": "mcas-score", "label": "MCAS scorer", "kind": "rest", "method": "POST", "path": "/score",
           "headers": {}, "secret_header": "X-Auth-Token: {{secret}}", "body_template": "{{input}}",
-          "response_path": "", "refusal": {"status": [502], "path": "detail.reason"}, "model": None,
+          "response_path": "$", "refusal": {"status": [502], "path": "detail.reason"}, "model": None,
           "timeout_s": 5, "secret": "s3cr3t", "updated_at": "2026-10-04T10:00:00Z",
           "target": {"key": KEY, "kind": "component", "label": "Scoring engine"}}
 CSV = b"amount_eur,market\n2500,DE\n4000,FR\n100,NL\n"

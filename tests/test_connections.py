@@ -269,3 +269,13 @@ def test_i6_retries_can_be_switched_off_for_a_single_probe(stub):
     with pytest.raises(c.EndpointBadResponse, match="503"):
         c.call(desc(stub), "q", params={"lang": "en"}, allowed_hosts=[stub.host], waits=())
     assert len(stub.seen) == 1
+
+
+@pytest.mark.parametrize("path", ["$", "$.", ""])
+def test_a_response_path_of_dollar_is_the_whole_answer(path):
+    """A structured system (a scorer) answers with several fields: `$` takes them all."""
+    assert c.extract({"score": 877, "recommendation": "Review"}, path) == {"score": 877, "recommendation": "Review"}
+
+
+def test_dollar_dot_starts_a_path_too():
+    assert c.extract({"detail": {"reason": "no clause"}}, "$.detail.reason") == "no clause"

@@ -191,9 +191,13 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def extract(obj: Any, path: str) -> Any:
-    """``a.b[0].c`` on nested dicts and lists; KeyError when a step is missing."""
+    """``a.b[0].c`` on nested dicts and lists; KeyError when a step is missing. ``$`` (or a path starting
+    ``$.``) is the root, so ``$`` alone is the whole answer."""
     current = obj
-    for key, index in _PATH_PART.findall(path or ""):
+    path = (path or "").strip()
+    if path.startswith("$"):
+        path = path[1:].lstrip(".")
+    for key, index in _PATH_PART.findall(path):
         if key:
             if not isinstance(current, dict) or key not in current:
                 raise KeyError(path)
