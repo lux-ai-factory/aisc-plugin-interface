@@ -127,3 +127,31 @@ def test_without_a_target_the_run_is_refused_before_the_plugin_starts(system):
     with pytest.raises(ValueError, match="target"):
         t.evaluate({})
     assert not hasattr(t, "seen")
+
+
+@pytest.fixture
+def no_endpoint(stub, monkeypatch):
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection",
+               (404, {"detail": "Training data has no endpoint: set one under Manage, Targets and endpoints"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    return stub
+
+
+def test_optional_a_target_without_an_endpoint_runs_on_the_uploaded_data(no_endpoint):
+    """Drift of a component that has no endpoint (training data) is drift of the uploads, as before."""
+    t, result = run(make(required=False), no_endpoint)
+    assert result == "done"
+    assert list(t.seen["reference"].columns) == ["amount_eur", "market"]
+
+
+def test_required_a_target_without_an_endpoint_is_refused_saying_why(no_endpoint):
+    with pytest.raises(ValueError, match="has no endpoint"):
+        run(make(), no_endpoint)
+
+
+def test_optional_a_platform_that_does_not_answer_still_stops_the_run(stub, monkeypatch):
+    monkeypatch.setenv("PLATFORM_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    with pytest.raises(Exception, match="could not be reached"):
+        run(make(required=False), stub)

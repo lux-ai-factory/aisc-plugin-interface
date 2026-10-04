@@ -374,7 +374,8 @@ on the execution page. Every plugin follows the same rules:
      enriched table like an upload; the answers are saved as `target-answers-<dataset>.csv`. The run
      settings `target_calls_at_once` (default 1) and `target_row_limit` (0: every row) are read from
      the plugin's config when its form has them. Which fields of a row are sent is the endpoint's
-     business: its body template (`{{input}}` sends the whole row).
+     business: its body template (`{{input}}` sends the whole row). With `required=False` a target
+     without an endpoint (training data, say) runs the plugin on the uploads as they are.
 
    `target_access_of(cls)` reads the declaration; `scripts/verify-plugins.sh` fails a plugin with none.
 2. **Never take the target from the form.** With a target bound, its address, key and model come from

@@ -210,7 +210,8 @@ PREFIX = "target."
 
 
 def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: str = SYSTEM_INPUT,
-                           label: str = "Target of the assessment (the system, or one of its components)"):
+                           label: str = "Target of the assessment (the system, or one of its components)",
+                           required: bool = True):
     """Class decorator for a plugin that analyses tables: before ``evaluate``, every row of each named
     dataset input is sent to the evaluation's target, through its endpoint (the row as the request's
     ``{{input}}``), and each scalar field of the answer is added to the row as ``target.<field>`` (a text
@@ -220,7 +221,8 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
     Run settings, read from the plugin's config when its form has them: ``target_calls_at_once``
     (default 1) and ``target_row_limit`` (default 0: every row). The answers are saved with the run as
     ``target-answers-<dataset>.csv``. A run without a target that has an endpoint is refused before the
-    plugin starts.
+    plugin starts; with ``required=False`` it runs on the uploaded tables as they are (a component with
+    no endpoint, such as training data), while any other failure to reach the platform still stops it.
     """
     datasets = tuple(datasets)
     if not datasets:
@@ -232,16 +234,24 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
                              " @dataset_through_target, not two")
         cls.target_access = "dataset_through_target"
         cls.dataset_through_target_inputs = datasets
+        cls.dataset_through_target_required = required
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
         original = cls.evaluate
 
         @functools.wraps(original)
         def evaluate(self, config_data: dict) -> Any:
-            from aisc_plugin_interface.connections import EndpointClient
+            from aisc_plugin_interface.connections import EndpointClient, EndpointNotFound
             if self.get_input_data(input_name) is None:
+                if not required:
+                    return original(self, config_data)
                 raise ValueError("no target: this plugin sends its datasets through the evaluation's target,"
                                  " which needs an endpoint (Manage, Targets and endpoints)")
-            client = EndpointClient.for_target(self, input_name)
+            try:
+                client = EndpointClient.for_target(self, input_name)
+            except EndpointNotFound as exc:
+                if not required:
+                    return original(self, config_data)
+                raise ValueError(str(exc)) from None
             settings = config_data or {}
             at_once = max(1, int(settings.get(CALLS_AT_ONCE) or 1))
             limit = max(0, int(settings.get(ROW_LIMIT) or 0))

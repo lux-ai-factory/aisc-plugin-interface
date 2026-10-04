@@ -499,6 +499,13 @@ class EndpointClient:
             with _OPENER.open(req, timeout=30) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
+            if exc.code == 404:                    # no such connection, or a target without an endpoint
+                try:
+                    detail = json.loads(exc.read() or b"{}").get("detail")
+                except ValueError:
+                    detail = None
+                raise EndpointNotFound(detail if isinstance(detail, str) and detail
+                                       else f"the platform has no connection {name!r}") from None
             raise EndpointError(f"the platform refused to resolve connection {name!r} ({exc.code})") from None
         except (urllib.error.URLError, TimeoutError, _Redirected) as exc:
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
