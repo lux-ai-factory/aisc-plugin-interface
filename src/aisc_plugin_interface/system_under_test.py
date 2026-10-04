@@ -46,18 +46,46 @@ ROLES = {
     "oip": ("base_url", "model", "api_key"),
 }
 
+#: What a plugin may need from its target's endpoint beyond a single answer. The platform's endpoint
+#: carries text and a history; a run-key answer may list more (`capabilities`).
+CAPABILITIES = ("text", "history", "tools", "logprobs")
+CARRIED_BY_DEFAULT = ("text", "history")
+
+
+def target_access_of(cls) -> str | None:
+    """How a plugin class gets what it assesses: "endpoint" (@system_under_test), "inputs"
+    (@assesses_inputs), or None when it declares nothing (the conformance check fails it)."""
+    return getattr(cls, "target_access", None)
+
+
+def assesses_inputs():
+    """Class decorator for a plugin that only reads its inputs (datasets, models, files) and calls no
+    live system: nothing changes at run time, the declaration is what the conformance check reads."""
+    def decorator(cls):
+        if target_access_of(cls) not in (None, "inputs"):
+            raise ValueError(f"{cls.__name__}: declare one of @system_under_test or @assesses_inputs, not both")
+        cls.target_access = "inputs"
+        return cls
+    return decorator
+
 
 def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, str] | None = None,
                       env: dict[str, str] | None = None, required: bool = True,
                       input_name: str = SYSTEM_INPUT,
-                      label: str = "Target of the assessment (the system, or one of its components)"):
+                      label: str = "Target of the assessment (the system, or one of its components)",
+                      needs: tuple[str, ...] | list[str] = ()):
     """Class decorator that points a tool at the run's system under test (see the module docstring).
 
     ``fields`` maps a config field (dotted for nesting) to a role, ``env`` maps an environment variable
     to a role; every role must belong to the first protocol. ``required`` says whether the tool needs
     an endpoint: when it is False and no target or endpoint is bound, ``evaluate`` runs unchanged.
+    ``needs`` lists what the tool needs from the endpoint beyond text (CAPABILITIES): a run whose
+    endpoint doesn't carry it is refused before the tool starts, with the reason.
     """
-    protocols = tuple(protocols)
+    protocols, needs = tuple(protocols), tuple(needs)
+    unknown = [n for n in needs if n not in CAPABILITIES]
+    if unknown:
+        raise ValueError(f"needs: {', '.join(unknown)} (known: {', '.join(CAPABILITIES)})")
     fields, env = dict(fields or {}), dict(env or {})
     if not protocols or any(p not in ROLES for p in protocols):
         raise ValueError(f"protocols: one or more of {', '.join(ROLES)}")
@@ -69,6 +97,10 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             raise ValueError(f"{target}: {role!r} is not a role of {first} ({', '.join(ROLES[first])})")
 
     def decorator(cls):
+        if target_access_of(cls) not in (None, "endpoint"):
+            raise ValueError(f"{cls.__name__}: declare one of @system_under_test or @assesses_inputs, not both")
+        cls.target_access = "endpoint"
+        cls.system_under_test_needs = needs
         # The input is declared optional so that a standalone form without targets is not blocked;
         # inside the Configurator the engine makes every evaluation's target required.
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
@@ -99,6 +131,11 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             except BadReference as exc:
                 raise ValueError(f"system under test: {exc}") from None
             name = issued.get("connection") or legacy or "system"
+            carried = tuple(issued.get("capabilities") or CARRIED_BY_DEFAULT)
+            missing = [n for n in needs if n not in carried]
+            if missing:
+                raise ValueError(f"{name} can't be used here: this plugin needs {', '.join(missing)} from its target,"
+                                 f" and the endpoint carries {', '.join(carried)}")
             endpoint = issued["endpoints"][first]
             values = {**endpoint, "api_key": issued["key"]}
             config = copy.deepcopy(config_data) if config_data is not None else {}

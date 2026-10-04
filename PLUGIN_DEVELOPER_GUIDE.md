@@ -355,9 +355,56 @@ output = plugin.evaluate({"score_column": "score", "threshold": 0.5})
 assert [m.name for m in plugin.export_metrics(output)] == ["Average score", "Pass rate"]
 ```
 
-## 13. Calling a system under test (Manage, Connections)
+## 13. How a plugin gets what it assesses
 
 This section needs the `feat/unified-modules` version of the library (see section 4).
+
+Every evaluation names its **target**: the AI system, or one component of its AI card (the chat
+assistant, the scoring model, the training data). A target that is reached over the network has an
+**endpoint**, set once under **Manage, Targets and endpoints**. Models a plugin uses for its own work
+(an LLM as a judge, an attacker, a grader, embeddings) are **tool models**, set in the plugin's form
+on the execution page. Every plugin follows the same rules:
+
+1. **Declare how the plugin gets what it assesses**, with exactly one of:
+   - `@system_under_test(...)`: it calls its target, only through the target's endpoint (13.1, 13.2);
+   - `@assesses_inputs()`: it only reads its inputs (datasets, models, files) and calls no system.
+
+   `target_access_of(cls)` reads the declaration; `scripts/verify-plugins.sh` fails a plugin with none.
+2. **Never take the target from the form.** With a target bound, its address, key and model come from
+   the platform for the length of the run. Write them into the plugin's own target fields, or into
+   variables named for the target (`AISC_TARGET_BASE_URL`, `AISC_TARGET_API_KEY`, `AISC_TARGET_MODEL`),
+   never into variables a tool model also reads (`OPENAI_API_KEY`, `OPENAI_BASE_URL` and the like).
+3. **Give every tool model its own fields** in the form (model, key, and address where it makes
+   sense), and pass them to its client explicitly: no fallback to a shared environment variable.
+4. **Say what the plugin needs from the endpoint beyond text**: `needs=("tools",)` or
+   `needs=("logprobs",)`. The platform's endpoint carries text and a history; a run whose endpoint
+   doesn't carry a need is refused before the tool starts, with the reason. A target without an
+   endpoint is refused the same way ("<target> has no endpoint: set one under Manage, Targets and
+   endpoints").
+5. **The run records what it reached**: the decorator and the client save `connection-<name>.json`
+   with the connection, the target and the protocol (never the key).
+
+The evaluation form lists every target, since inputs-only plugins need targets without an endpoint;
+each name ends in "· endpoint: <name>" or "· no endpoint".
+
+```python
+from aisc_plugin_interface.system_under_test import assesses_inputs, system_under_test
+
+
+@assesses_inputs()
+class DriftPlugin(BaseEvaluationPlugin[DriftConfig]):
+    ...                                   # reads its uploaded datasets only
+
+
+@system_under_test(protocols=("openai",),
+                   env={"AISC_TARGET_BASE_URL": "base_url", "AISC_TARGET_API_KEY": "api_key",
+                        "AISC_TARGET_MODEL": "model"})
+class BiasPlugin(BaseEvaluationPlugin[BiasConfig]):
+    def evaluate(self, config_data):
+        target = OpenAI(base_url=os.environ["AISC_TARGET_BASE_URL"], api_key=os.environ["AISC_TARGET_API_KEY"])
+        judge = OpenAI(api_key=config_data["judge_api_key"])          # a tool model: its own fields
+        ...
+```
 
 A project admin registers the AI systems the project assesses over the network under **Manage,
 Connections** on the project page: an OpenAI-compatible endpoint, an A2A agent, an Open Inference
@@ -384,8 +431,8 @@ class MyPlugin(BaseEvaluationPlugin[MyConfig]):
 This adds the `target` input: what the evaluation assesses, the system or one component of its AI
 card. When a run has a target with an endpoint, the platform issues the run a key for that endpoint
 (valid 12 hours, stored hashed), and the declared config fields (dotted for nesting) and environment
-variables (`env={"OPENAI_BASE_URL": "base_url"}`, set for the length of `evaluate` only) are filled
-for the first protocol listed.
+variables (`env={"AISC_TARGET_BASE_URL": "base_url"}`, set for the length of `evaluate` only) are
+filled for the first protocol listed.
 
 | Protocol | Roles |
 |---|---|
@@ -394,8 +441,9 @@ for the first protocol listed.
 | `a2a` | `agent_card_url`, `rpc_url`, `api_key` |
 | `oip` | `base_url`, `model`, `api_key` |
 
-Only fill what reaches the system under test: a tool that also uses an LLM as a judge keeps that
-client on its own key. With `required=False` the tool runs unchanged when no endpoint is bound.
+Only fill what reaches the system under test (rule 2): a tool that also uses an LLM as a judge keeps
+that client on its own fields (rule 3). With `required=False` the tool runs unchanged when no endpoint
+is bound.
 
 Every evaluation in the Configurator names its target, whether or not the tool calls a system: the
 engine adds a required `target` input to every plugin's form, and results are joined to it. A plugin
