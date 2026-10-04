@@ -434,7 +434,9 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if status == 404:
                 raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)")
             if 400 <= status < 500:
-                raise EndpointBadResponse(f"{d.label}: the system answered {status}")
+                # the system's own reason, a short excerpt with the key taken out: without it a 422 is a guess
+                said = _scrub((raw or b"").decode("utf-8", errors="replace")[:300], d.secret)
+                raise EndpointBadResponse(f"{d.label}: the system answered {status}: {said}")
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
                                    allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),

@@ -163,6 +163,17 @@ def test_i6_the_backoff_is_one_then_three_seconds(stub):
     assert waits == [1, 3]
 
 
+def test_a_4xx_says_what_the_system_answered_without_the_key(stub):
+    """A plugin and the platform's log only see this message: without the system's own reason a 422 is a guess."""
+    stub.route("/chat", (422, {"detail": [{"loc": ["body", "question"], "msg": "at most 500 characters",
+                                           "echo": "s3cr3t-value"}]}))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        client(stub).ask("q", lang="en")
+    message = str(exc.value)
+    assert "422" in message and "at most 500 characters" in message
+    assert "s3cr3t-value" not in message
+
+
 def test_i6_a_4xx_is_never_retried(stub):
     stub.route("/chat", (422, {"detail": "bad"}))
     with pytest.raises(c.EndpointBadResponse, match="422"):
