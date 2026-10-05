@@ -105,3 +105,39 @@ def test_n7_a_refusal_says_where_to_allow_the_host(monkeypatch):
     resolving(monkeypatch, {"mcas.internal": "10.1.2.3"})
     with pytest.raises(c.BlockedAddress, match="Allowed internal hosts"):
         c.guard_url("http://mcas.internal:8500/chat", [])
+
+
+# ── security review 2026-10-05 ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("host", ["::ffff:127.0.0.1", "::ffff:169.254.169.254", "::ffff:7f00:1"])
+def test_an_ipv4_mapped_address_is_checked_as_the_ipv4_address_it_maps(host):
+    """[::ffff:169.254.169.254] was compared with the IPv4 denied list as an IPv6 address, never equal,
+    so an allowed mapped literal reached metadata or a stack service (F1)."""
+    denied = ["127.0.0.1", "169.254.169.254"]
+    with pytest.raises(c.BlockedAddress):
+        c.guard_url(f"http://[{host}]/x", allowed_hosts=[host], denied_addresses=denied)
+
+
+def test_a_name_that_rebinds_after_the_check_is_refused_at_connect(stub, monkeypatch):
+    """guard_url resolved the name, then urllib resolved it again to connect: a name answering a public
+    address for the check and a denied one for the connection got through (F2). The peer the socket
+    actually reached is checked before anything is sent."""
+    import socket as s
+
+    real = s.getaddrinfo
+    calls = []
+
+    def rebinding(host, port, *a, **k):
+        if host == "rebind.test":
+            calls.append(host)
+            ip = "93.184.216.34" if len(calls) == 1 else "127.0.0.1"
+            return real(ip, port, *a, **k)
+        return real(host, port, *a, **k)
+
+    monkeypatch.setattr(s, "getaddrinfo", rebinding)
+    stub.route("/chat", (200, {"answer": "metadata"}))
+    d = desc(stub, base_url=f"http://rebind.test:{stub.port}")
+    cl = c.EndpointClient(d, allowed_hosts=["rebind.test"], denied_addresses=["127.0.0.1"], sleep=lambda _s: None)
+    with pytest.raises(c.BlockedAddress):
+        cl.ask("q", lang="en")
+    assert stub.seen == []

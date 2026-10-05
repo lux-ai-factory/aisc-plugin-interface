@@ -178,19 +178,26 @@ def _issue_run_key(pid: str, path: str, name: str) -> dict:
     token = os.environ.get("PLATFORM_CONNECTIONS_TOKEN") or ""
     if not base or not token:
         raise RuntimeError("PLATFORM_URL and PLATFORM_CONNECTIONS_TOKEN must be set to reach a system under test")
+    from aisc_plugin_interface.connections import _OPENER, _Redirected, is_no_endpoint
+
     req = urllib.request.Request(
         f"{base}/internal/projects/{urllib.parse.quote(pid)}/{path}/run-keys",
         data=b"", method="POST", headers={"X-AISC-Service-Token": token, "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        # the opener that follows no redirect: the service token goes to the platform and nowhere else
+        with _OPENER.open(req, timeout=30) as resp:
             return json.loads(resp.read())
+    except _Redirected as exc:
+        raise RuntimeError(f"the platform answered a run key request with a redirect ({exc.code})") from None
     except urllib.error.HTTPError as exc:
         try:
-            detail = json.loads(exc.read() or b"{}").get("detail")
+            body = json.loads(exc.read() or b"{}")
         except ValueError:
-            detail = None
+            body = {}
+        detail = body.get("detail") if isinstance(body, dict) else None
         reason = f": {detail}" if isinstance(detail, str) and detail else f" ({exc.code})"
-        error = NoEndpoint if exc.code == 404 else RuntimeError
+        # only the platform's no-endpoint answer lets an optional target be skipped
+        error = NoEndpoint if is_no_endpoint(exc.code, body) else RuntimeError
         raise error(f"the platform refused a run key for {name!r}{reason}") from None
     except (urllib.error.URLError, TimeoutError):
         raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
@@ -206,6 +213,9 @@ def _set_dotted(config: dict, path: str, value: Any) -> None:
 
 #: the run settings @dataset_through_target reads from a plugin's config, when its form has them
 CALLS_AT_ONCE, ROW_LIMIT = "target_calls_at_once", "target_row_limit"
+#: The most calls at once a run may ask for: its setting comes from a project member's form, and each
+#: call is a thread of the shared worker.
+MAX_CALLS_AT_ONCE = 16
 PREFIX = "target."
 
 
@@ -240,28 +250,38 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
 
         @functools.wraps(original)
         def evaluate(self, config_data: dict) -> Any:
-            from aisc_plugin_interface.connections import EndpointClient, EndpointNotFound
-            if self.get_input_data(input_name) is None:
+            from aisc_plugin_interface.connections import (
+                BadReference, EndpointClient, EndpointNotFound, TargetHasNoEndpoint,
+            )
+            payload = self.get_input_data(input_name)
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            if value is None:                                          # not given, or not bound
                 if not required:
                     return original(self, config_data)
                 raise ValueError("no target: this plugin sends its datasets through the evaluation's target,"
                                  " which needs an endpoint (Manage, Targets and endpoints)")
             try:
-                client = EndpointClient.for_target(self, input_name)
-            except EndpointNotFound as exc:
+                # a target's endpoint, or a connection bound directly (connection:<pid>/<name>)
+                client = (EndpointClient.for_target(self, input_name) if is_target(value)
+                          else EndpointClient.for_input(self, input_name))
+            except TargetHasNoEndpoint as exc:
                 if not required:
                     return original(self, config_data)
                 raise ValueError(str(exc)) from None
+            except (EndpointNotFound, BadReference) as exc:
+                raise ValueError(f"target: {exc}") from None
             settings = config_data or {}
-            at_once = max(1, int(settings.get(CALLS_AT_ONCE) or 1))
+            at_once = min(MAX_CALLS_AT_ONCE, max(1, int(settings.get(CALLS_AT_ONCE) or 1)))
             limit = max(0, int(settings.get(ROW_LIMIT) or 0))
             for name in datasets:
                 table = self.get_input_data(name)
                 if table is None:
                     continue
-                enriched = _through(client, table, at_once, limit)
-                self.set_input_content(name, enriched)
-                self.upload_artifact(f"target-answers-{name}.csv", enriched)
+                merged = _through(client, table, at_once, limit)
+                # the plugin gets its table back in the form it had it (a DataFrame, or rows), whatever
+                # its input's provider parses; the answers are saved with the run as CSV
+                self._replace_input_data(name, _like(table, merged))
+                self.upload_artifact(f"target-answers-{name}.csv", _as_csv(merged))
             return original(self, config_data)
 
         cls.evaluate = evaluate
@@ -298,10 +318,8 @@ def _answer_columns(answer) -> dict:
     return out
 
 
-def _through(client, table, at_once: int, limit: int) -> bytes:
-    """The table with the target's answer to each row, as CSV."""
-    import csv
-    import io
+def _through(client, table, at_once: int, limit: int) -> list[dict]:
+    """The table's rows, each with the target's answer as more columns."""
     from concurrent.futures import ThreadPoolExecutor
     from aisc_plugin_interface.connections import EndpointError
 
@@ -319,10 +337,29 @@ def _through(client, table, at_once: int, limit: int) -> bytes:
         answers = list(pool.map(one, rows))
     if rows and all(PREFIX + "error" in a for a in answers):
         raise RuntimeError(f"the target answered none of the {len(rows)} rows: {answers[0][PREFIX + 'error']}")
-    merged = [{**{k: _plain(v) for k, v in row.items()}, **answer} for row, answer in zip(rows, answers)]
-    columns = list(dict.fromkeys(k for r in merged for k in r))
+    return [{**{k: _plain(v) for k, v in row.items()}, **answer} for row, answer in zip(rows, answers)]
+
+
+def _columns(merged: list[dict]) -> list[str]:
+    return list(dict.fromkeys(k for r in merged for k in r))
+
+
+def _as_csv(merged: list[dict]) -> bytes:
+    """The enriched rows as CSV, for the run's artifact."""
+    import csv
+    import io
+
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer = csv.DictWriter(buffer, fieldnames=_columns(merged))
     writer.writeheader()
     writer.writerows(merged)
     return buffer.getvalue().encode()
+
+
+def _like(table, merged: list[dict]):
+    """The enriched rows in the form the table had: a DataFrame for a DataFrame, else a list of rows."""
+    if hasattr(table, "to_dict"):
+        import pandas as pd
+
+        return pd.DataFrame(merged, columns=_columns(merged))
+    return merged

@@ -161,3 +161,31 @@ def test_s9_without_the_platform_settings_the_run_stops_clearly(monkeypatch):
     t = bound(make(protocols=("openai",), fields={"base": "base_url"}))
     with pytest.raises(RuntimeError, match="PLATFORM_URL"):
         t.evaluate({})
+
+
+def test_the_run_key_request_follows_no_redirect(stub, monkeypatch):
+    """It used urlopen, which follows a 30x and sends the service token on to wherever it points
+    (code review 2026-10-05)."""
+    from aisc_plugin_interface import system_under_test as sut
+
+    stub.route("/internal/projects/p1/targets/k/run-keys", (302, f"{stub.base}/elsewhere"))
+    stub.route("/elsewhere", (200, {"run_key": "leaked"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    with pytest.raises(RuntimeError):
+        sut._issue_run_key("p1", "targets/k", "k")
+    assert [r["path"] for r in stub.seen] == ["/internal/projects/p1/targets/k/run-keys"]
+
+
+def test_only_the_no_endpoint_answer_is_no_endpoint(stub, monkeypatch):
+    from aisc_plugin_interface import system_under_test as sut
+
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    stub.route("/internal/projects/p1/targets/k/run-keys", (404, {"detail": "no project 'p1'"}))
+    with pytest.raises(RuntimeError) as exc:
+        sut._issue_run_key("p1", "targets/k", "k")
+    assert not isinstance(exc.value, sut.NoEndpoint)
+    stub.route("/internal/projects/p1/targets/k/run-keys", (404, {"detail": "x", "reason": "no_endpoint"}))
+    with pytest.raises(sut.NoEndpoint):
+        sut._issue_run_key("p1", "targets/k", "k")

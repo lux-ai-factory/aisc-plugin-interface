@@ -159,11 +159,12 @@ process; a plugin author does not set them.
 ## Tests
 
 The tests need no database and no network beyond local stub servers on 127.0.0.1. The project
-declares no dev dependencies, so pytest is added for the run; use `python -m pytest` so that the
-`tests` package can be imported:
+declares no dev dependencies, so pytest and pandas (the tests of `@dataset_through_target` read their
+table with it) are added for the run; use `python -m pytest` so that the `tests` package can be
+imported:
 
 ```bash
-uv run --with pytest python -m pytest -q
+uv run --with pytest --with pandas python -m pytest -q
 ```
 
 ## Layout

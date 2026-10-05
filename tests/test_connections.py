@@ -295,3 +295,43 @@ def test_a_failure_without_an_answer_has_no_status(stub):
     with pytest.raises(c.EndpointError) as exc:
         c.call(desc(stub, base_url="http://127.0.0.1:9"), "q", waits=(), allowed_hosts=["127.0.0.1:9"])
     assert exc.value.status is None
+
+
+def test_a_key_across_the_excerpts_end_is_still_taken_out(stub):
+    """The excerpt was cut to 300 characters before the key was taken out, so a key echoed across the
+    cut kept its first characters (code review 2026-10-05)."""
+    stub.route("/chat", (422, "x" * 290 + " s3cr3t-value and more"))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        client(stub).ask("q", lang="en")
+    assert "s3cr3t" not in str(exc.value)
+
+
+def test_a_connection_the_system_drops_is_retried_then_an_endpoint_error(stub, monkeypatch):
+    """urllib leaves getresponse() and read() errors unwrapped: a dropped connection escaped call() as a
+    raw RemoteDisconnected, unretried, and aborted a whole dataset run (code review 2026-10-05)."""
+    import http.client
+
+    tries = []
+
+    def dropped(*_a, **_k):
+        tries.append(1)
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr(c._OPENER, "open", dropped)
+    waits = []
+    cl = c.EndpointClient(desc(stub), allowed_hosts=[stub.host], sleep=waits.append)
+    with pytest.raises(c.EndpointError) as exc:
+        cl.ask("q", lang="en")
+    assert len(tries) == 3 and waits == [1, 3]
+    assert "s3cr3t-value" not in str(exc.value)
+
+
+def test_an_answer_past_the_size_cap_is_refused_not_read_whole(stub, monkeypatch):
+    """The system's answer was read whole into memory, in the shared worker or the platform (security
+    review 2026-10-05, F3). Past MAX_ANSWER_BYTES the call is refused, and at most that much is read."""
+    monkeypatch.setattr(c, "MAX_ANSWER_BYTES", 1000)
+    stub.route("/chat", (200, {"answer": "x" * 5000}))
+    with pytest.raises(c.EndpointBadResponse, match="larger than 1000 bytes"):
+        client(stub).ask("q", lang="en")
+    stub.route("/chat", (200, {"answer": "short"}))
+    assert client(stub).ask("q", lang="en").text == "short"

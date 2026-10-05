@@ -35,10 +35,16 @@ class Stub:
                 if callable(payload):
                     payload = payload(stub.seen[-1])
                 if status in (301, 302):
-                    self.send_response(status); self.send_header("Location", payload); self.end_headers(); return
+                    self.send_response(status)
+                    self.send_header("Location", payload)
+                    self.end_headers()
+                    return
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-                self.send_response(status); self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
 
             do_GET = do_POST = do_PUT = _serve
 

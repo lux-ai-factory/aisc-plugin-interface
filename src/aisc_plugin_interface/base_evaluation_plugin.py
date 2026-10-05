@@ -298,6 +298,13 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         if provider_cls and file_content is not None:
             self._input_provider_instances[name] = provider_cls(file_content)
 
+    def _replace_input_data(self, name: str, data: Any) -> None:
+        """Put already-parsed data in place of an input's (@dataset_through_target's enriched table):
+        not through the provider's parser, which reads the input's own file format."""
+        provider = self._input_provider_instances.get(name)
+        if provider is not None:
+            provider._data = data
+
     def get_input_data(self, name: str) -> Any | None:
         """
         Get data from InputProvider using name set in evaluation_input decorator

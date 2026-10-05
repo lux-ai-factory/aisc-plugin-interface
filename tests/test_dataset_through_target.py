@@ -5,12 +5,15 @@ if it had been uploaded so."""
 import io
 import json
 
-import pandas as pd
 import pytest
 
-from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input
-from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
-from aisc_plugin_interface.system_under_test import SYSTEM_INPUT, dataset_through_target, target_access_of
+# the plugin these tests run reads its CSV with pandas, a table type the decorator takes; pandas is
+# not a dependency of the library, so without it this module is skipped, saying why
+pd = pytest.importorskip("pandas", reason="the tests of @dataset_through_target read their table with pandas")
+
+from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input  # noqa: E402 (after importorskip)
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider  # noqa: E402 (after importorskip)
+from aisc_plugin_interface.system_under_test import SYSTEM_INPUT, dataset_through_target, target_access_of  # noqa: E402 (after importorskip)
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
 KEY = "component:0b9c7a1e-0000-4000-8000-000000000002"
@@ -155,3 +158,89 @@ def test_optional_a_platform_that_does_not_answer_still_stops_the_run(stub, monk
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     with pytest.raises(Exception, match="could not be reached"):
         run(make(required=False), stub)
+
+
+# ── code review and security review 2026-10-05 ─────────────────────────────
+
+def test_optional_a_404_that_is_not_no_endpoint_still_stops_the_run(stub, monkeypatch):
+    """Any 404 from the platform read as 'this target has no endpoint', so a wrong pid, a missing route
+    or an older platform ran an optional plugin on the uploads without a word. Only the platform's
+    no-endpoint answer does that now."""
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection", (404, {"detail": "no target 'x'"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    with pytest.raises(ValueError, match="no target"):
+        run(make(required=False), stub)
+
+
+def test_the_platforms_no_endpoint_reason_is_what_skips_an_optional_target(stub, monkeypatch):
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection",
+               (404, {"detail": "Training data: none", "reason": "no_endpoint"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    t, result = run(make(required=False), stub)
+    assert result == "done"
+
+
+def test_an_unbound_target_input_is_no_target(system):
+    """{'value': None} raised BadReference instead of the optional skip."""
+    t = make(required=False)()
+    t._set_artifact_callback(lambda n, c: None)
+    t.set_input_content(SYSTEM_INPUT, json.dumps({"value": None}).encode())
+    t.set_input_content("reference", CSV)
+    t.set_input_content("evaluated", CSV)
+    assert t.evaluate({}) == "done"
+
+
+def test_a_connection_bound_directly_is_resolved_as_a_connection(stub, monkeypatch):
+    """SYSTEM_INPUT accepts connection:<pid>/<name>, but the decorator parsed only target: values."""
+    stub.route(f"/internal/projects/{PID}/connections/mcas-score",
+               (200, dict(SCORER, base_url=stub.base, allowed_hosts=[stub.host], denied_addresses=[])))
+    stub.route("/score", (200, score))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    t = make()()
+    t._set_artifact_callback(lambda n, c: None)
+    t.set_input_content(SYSTEM_INPUT, json.dumps({"value": f"connection:{PID}/mcas-score"}).encode())
+    t.set_input_content("reference", CSV)
+    t.set_input_content("evaluated", CSV)
+    assert t.evaluate({}) == "done"
+    assert "target.score" in t.seen["reference"].columns
+
+
+def test_calls_at_once_has_a_ceiling(system, monkeypatch):
+    """A project member's target_calls_at_once was the thread pool's size as given (security review F4)."""
+    from aisc_plugin_interface import system_under_test as sut
+
+    sizes = []
+    real = sut._through
+    monkeypatch.setattr(sut, "_through", lambda client, table, at_once, limit: sizes.append(at_once)
+                        or real(client, table, at_once, limit))
+    run(make(), system, config={"target_calls_at_once": 5000})
+    assert sizes and max(sizes) == sut.MAX_CALLS_AT_ONCE == 16
+
+
+def test_a_json_declared_dataset_comes_back_as_rows_not_csv(system):
+    """The enriched table went back through set_input_content as CSV whatever the input's provider was,
+    so a JSON or Parquet dataset crashed after every row had been sent (code review 2026-10-05). The
+    plugin gets its table back in the form it had it, with the target's columns."""
+    from aisc_plugin_interface.input_providers.json_input_provider import JsonInputProvider
+
+    @dataset_through_target(datasets=("rows",))
+    @evaluation_input(name="rows", label="Rows", input_provider_class=JsonInputProvider, input_type=InputType.DATASET)
+    class Rows(BaseEvaluationPlugin):
+        def evaluate(self, config_data):
+            self.seen = self.get_input_data("rows")
+            return "done"
+
+        def export_metrics(self, *a, **k):
+            return []
+
+    t = Rows()
+    artifacts = {}
+    t._set_artifact_callback(artifacts.__setitem__)
+    t.set_input_content(SYSTEM_INPUT, json.dumps({"value": f"target:{PID}/{KEY}"}).encode())
+    t.set_input_content("rows", json.dumps([{"amount_eur": 2500, "market": "DE"}]).encode())
+    assert t.evaluate({}) == "done"
+    assert isinstance(t.seen, list) and t.seen[0]["target.score"] == 250
+    assert "target-answers-rows.csv" in artifacts

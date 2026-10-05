@@ -371,11 +371,15 @@ on the execution page. Every plugin follows the same rules:
    - `@dataset_through_target(datasets=("reference-dataset", ...))`: it analyses tables, and each row is
      first sent through the target's endpoint, whose answer becomes columns `target.<field>` (a refusal
      `target.refused` and `target.refusal_reason`, a failed call `target.error`). The plugin reads the
-     enriched table like an upload; the answers are saved as `target-answers-<dataset>.csv`. The run
-     settings `target_calls_at_once` (default 1) and `target_row_limit` (0: every row) are read from
-     the plugin's config when its form has them. Which fields of a row are sent is the endpoint's
-     business: its body template (`{{input}}` sends the whole row). With `required=False` a target
-     without an endpoint (training data, say) runs the plugin on the uploads as they are.
+     enriched table in the form it had it (a DataFrame stays a DataFrame, rows stay rows, whatever its
+     input's provider); the answers are saved as `target-answers-<dataset>.csv`. The run settings
+     `target_calls_at_once` (default 1, at most 16) and `target_row_limit` (0: every row) are read
+     from the plugin's config when its form has them. Which fields of a row are sent is the
+     endpoint's business: its body template (`{{input}}` sends the whole row). A connection bound
+     directly (`connection:<pid>/<name>`) works as well as a target. With `required=False` a target
+     the platform says has no endpoint (training data, say) runs the plugin on the uploads as they
+     are; any other failure to resolve it (no such target or project, a platform that does not
+     answer) still stops the run.
 
    `target_access_of(cls)` reads the declaration; `scripts/verify-plugins.sh` fails a plugin with none.
 2. **Never take the target from the form.** With a target bound, its address, key and model come from
@@ -481,11 +485,14 @@ class MyPlugin(BaseEvaluationPlugin[MyConfig]):
 
 The client resolves the connection from the platform, renders the request, calls the system, reads
 the answer and records what was assessed as the artifact `connection-<name>.json` (without the key).
-Errors are `EndpointAuthError`, `EndpointNotFound`, `EndpointTimeout`, `EndpointBadResponse` and
-`BlockedAddress`, all subclasses of `EndpointError`. Internal addresses are refused unless the
-project allows them (Manage, Connections, Allowed internal hosts, or the deployment's
-`CONNECTIONS_ALLOWED_HOSTS`); the platform hands the run that rule with the connection, so the
-plugin needs no setting of its own.
+Errors are `EndpointAuthError`, `EndpointNotFound` (and its `TargetHasNoEndpoint`), `EndpointTimeout`,
+`EndpointBadResponse` and `BlockedAddress`, all subclasses of `EndpointError`. A connection the system
+drops is retried like a timeout; an answer past `MAX_ANSWER_BYTES` (10 MiB) is refused, not read whole.
+Internal addresses are refused unless the project allows them (Manage, Connections, Allowed internal
+hosts, or the deployment's `CONNECTIONS_ALLOWED_HOSTS`); the platform hands the run that rule with the
+connection, so the plugin needs no setting of its own. The rule is applied to the address the
+connection actually reaches, after any second name lookup, and an IPv4-mapped address counts as the
+IPv4 address it carries.
 
 ## License
 

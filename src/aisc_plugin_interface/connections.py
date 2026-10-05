@@ -17,11 +17,13 @@ Standard library only, so no plugin gains a dependency.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 import urllib.error
@@ -61,6 +63,20 @@ class EndpointAuthError(EndpointError):
 
 class EndpointNotFound(EndpointError):
     """The system answered 404."""
+
+
+class TargetHasNoEndpoint(EndpointNotFound):
+    """The platform says this target has no endpoint (its 404 with reason no_endpoint): the one 404 that
+    lets an optional target be skipped. Any other 404 (no project, no target, no route) is not that."""
+
+
+def is_no_endpoint(status: int, body: Any) -> bool:
+    """Whether a platform answer is its 'this target has no endpoint' 404. Older platforms say so only
+    in the detail's words."""
+    if status != 404 or not isinstance(body, dict):
+        return False
+    detail = body.get("detail")
+    return body.get("reason") == "no_endpoint" or (isinstance(detail, str) and " has no endpoint" in detail)
 
 
 class EndpointTimeout(EndpointError):
@@ -140,6 +156,20 @@ def allowed_hosts_from_env() -> list[str]:
     return [h.strip().lower() for h in (os.environ.get("CONNECTIONS_ALLOWED_HOSTS") or "").split(",") if h.strip()]
 
 
+def _as_ipv4(ip):
+    """The IPv4 address an IPv6 one carries (IPv4-mapped ::ffff:a.b.c.d, 6to4 2002::/16, NAT64
+    64:ff9b::/96), else the address itself: a mapped literal reaches the IPv4 address on Linux, so it
+    is checked as that address."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if ip.sixtofour is not None:
+            return ip.sixtofour
+        if ip in ipaddress.IPv6Network("64:ff9b::/96"):
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
 def _refused_ip(ip: ipaddress._BaseAddress) -> bool:
     return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved
             or ip.is_unspecified)
@@ -157,17 +187,97 @@ def guard_url(url: str, allowed_hosts: list[str] | None = None, denied_addresses
         raise BlockedAddress("the URL has no host")
     port = parts.port or (443 if parts.scheme == "https" else 80)
     allowed = [h.lower() for h in (allowed_hosts or [])]
-    denied = {ipaddress.ip_address(a) for a in (denied_addresses or [])}
+    denied = {_as_ipv4(ipaddress.ip_address(a)) for a in (denied_addresses or [])}
     is_allowed = host in allowed or f"{host}:{port}" in allowed
     if is_allowed and not denied:
         return
-    addresses = _addresses(host, port)
-    if any(ip in denied for ip in addresses):
-        raise BlockedAddress(f"{host} is a service of this deployment or a metadata address, never allowed")
-    if is_allowed:
-        return
-    if not addresses or any(_refused_ip(ip) for ip in addresses):
+    addresses = [_as_ipv4(ip) for ip in _addresses(host, port)]
+    if not addresses and not is_allowed:
         raise BlockedAddress(f"{host} is an internal address; allow it under Manage, Connections, Allowed internal hosts")
+    for ip in addresses:
+        _check_address(host, ip, is_allowed, denied)
+
+
+def _check_address(host: str, ip, is_allowed: bool, denied: set) -> None:
+    """One address of `host`, by the rules: a denied one never, else an allowed host, else no internal one."""
+    if ip in denied:
+        raise BlockedAddress(f"{host} is a service of this deployment or a metadata address, never allowed")
+    if not is_allowed and _refused_ip(ip):
+        raise BlockedAddress(f"{host} is an internal address; allow it under Manage, Connections, Allowed internal hosts")
+
+
+#: The largest answer a system's call reads: past it the call is refused, and no more is read into
+#: memory (the worker and the platform's Test button share their process with other work).
+MAX_ANSWER_BYTES = 10 * 1024 * 1024
+
+
+def _read_capped(stream, label: str) -> bytes:
+    raw = stream.read(MAX_ANSWER_BYTES + 1)
+    if len(raw) > MAX_ANSWER_BYTES:
+        raise EndpointBadResponse(f"{label}: the answer is larger than {MAX_ANSWER_BYTES} bytes")
+    return raw
+
+
+#: The rules of the call in flight on this thread, (allowed hosts, denied addresses), for the peer check.
+_POLICY = threading.local()
+
+
+class _Policy:
+    """While a call to a system runs, the address its socket reaches is checked again by the same rules:
+    urllib resolves the name a second time to connect, and a name can answer differently (DNS
+    rebinding). The platform's own calls run without one."""
+
+    def __init__(self, allowed_hosts, denied_addresses):
+        self.allowed = [h.lower() for h in (allowed_hosts or [])]
+        self.denied = {_as_ipv4(ipaddress.ip_address(a)) for a in (denied_addresses or [])}
+
+    def __enter__(self):
+        _POLICY.current = self
+        return self
+
+    def __exit__(self, *exc):
+        _POLICY.current = None
+        return False
+
+
+def _check_peer(conn) -> None:
+    """The peer of a connection just made, checked by the policy of the call in flight, before anything
+    is sent. Through a proxy the proxy resolves the name, so there is no peer of the system to check."""
+    policy = getattr(_POLICY, "current", None)
+    if policy is None or conn._tunnel_host or urllib.request.getproxies():
+        return
+    host = (conn.host or "").lower()
+    is_allowed = host in policy.allowed or f"{host}:{conn.port}" in policy.allowed
+    try:
+        _check_address(host, _as_ipv4(ipaddress.ip_address(conn.sock.getpeername()[0])), is_allowed, policy.denied)
+    except BlockedAddress:
+        conn.sock.close()
+        raise
+
+
+class _GuardedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        super().connect()
+        _check_peer(self)
+
+
+class _GuardedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        # the TCP connection, the peer checked, then TLS with the name asked for
+        http.client.HTTPConnection.connect(self)
+        _check_peer(self)
+        server_hostname = self._tunnel_host or self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _GuardedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_GuardedHTTPConnection, req)
+
+
+class _GuardedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_GuardedHTTPSConnection, req, context=self._context)
 
 
 def _addresses(host: str, port: int) -> list:
@@ -192,7 +302,7 @@ class _Redirected(Exception):
         self.code = code
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = urllib.request.build_opener(_NoRedirect, _GuardedHTTPHandler, _GuardedHTTPSHandler)
 
 
 def extract(obj: Any, path: str) -> Any:
@@ -371,8 +481,8 @@ def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts
     guard_url(url, allowed_hosts, denied_addresses)
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
     try:
-        with _OPENER.open(req, timeout=d.timeout_s) as resp:
-            return json.loads(resp.read() or b"null")
+        with _Policy(allowed_hosts, denied_addresses), _OPENER.open(req, timeout=d.timeout_s) as resp:
+            return json.loads(_read_capped(resp, d.label) or b"null")
     except urllib.error.HTTPError as exc:
         raise EndpointBadResponse(f"{d.label}: the agent answered {exc.code} while polling") from None
     except (urllib.error.URLError, TimeoutError, socket.timeout, _Redirected):
@@ -414,12 +524,13 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
         retryable: EndpointError
         try:
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
-            with _OPENER.open(req, timeout=d.timeout_s) as resp:
-                status, raw = resp.status, resp.read()
+            with _Policy(allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses), \
+                    _OPENER.open(req, timeout=d.timeout_s) as resp:
+                status, raw = resp.status, _read_capped(resp, d.label)
         except _Redirected as exc:
             raise EndpointBadResponse(f"{d.label}: the system answered with a redirect ({exc.code}), which is not followed")
         except urllib.error.HTTPError as exc:
-            status, raw = exc.code, exc.read()
+            status, raw = exc.code, _read_capped(exc, d.label)
         except (TimeoutError, socket.timeout):
             status, raw = None, b""
         except urllib.error.URLError as exc:
@@ -427,6 +538,14 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
                 status, raw = None, b""
             else:
                 raise EndpointError(_scrub(f"{d.label}: {exc.reason}", d.secret)) from None
+        except (http.client.HTTPException, ConnectionError) as exc:
+            # urllib leaves getresponse() and read() errors unwrapped: a connection the system dropped
+            # is retried like a timeout, then an EndpointError
+            if not waits:
+                raise EndpointError(_scrub(f"{d.label}: the connection was dropped ({type(exc).__name__})",
+                                           d.secret)) from None
+            sleep(waits.pop(0))
+            continue
         latency = int((time.monotonic() - started) * 1000)
         try:
             payload = json.loads(raw) if raw else None
@@ -443,8 +562,9 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if status == 404:
                 raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)", status=404)
             if 400 <= status < 500:
-                # the system's own reason, a short excerpt with the key taken out: without it a 422 is a guess
-                said = _scrub((raw or b"").decode("utf-8", errors="replace")[:300], d.secret)
+                # the system's own reason, a short excerpt with the key taken out (before the cut, so a key
+                # across it goes too): without it a 422 is a guess
+                said = _scrub((raw or b"").decode("utf-8", errors="replace"), d.secret)[:300]
                 raise EndpointBadResponse(f"{d.label}: the system answered {status}: {said}", status=status)
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
@@ -506,13 +626,15 @@ class EndpointClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:                    # no such connection, or a target without an endpoint
                 try:
-                    detail = json.loads(exc.read() or b"{}").get("detail")
+                    body = json.loads(exc.read() or b"{}")
                 except ValueError:
-                    detail = None
-                raise EndpointNotFound(detail if isinstance(detail, str) and detail
-                                       else f"the platform has no connection {name!r}") from None
+                    body = {}
+                detail = body.get("detail") if isinstance(body, dict) else None
+                error = TargetHasNoEndpoint if is_no_endpoint(404, body) else EndpointNotFound
+                raise error(detail if isinstance(detail, str) and detail
+                            else f"the platform has no connection {name!r}") from None
             raise EndpointError(f"the platform refused to resolve connection {name!r} ({exc.code})") from None
-        except (urllib.error.URLError, TimeoutError, _Redirected) as exc:
+        except (urllib.error.URLError, TimeoutError, _Redirected):
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
         # The network rule is the platform's, per project: the internal hosts this connection may
         # reach and the addresses it never may. The run's own environment opens nothing.
