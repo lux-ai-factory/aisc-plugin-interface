@@ -14,6 +14,7 @@ from aisc_plugin_interface.models.measure import (
     MetricVisualization,
     ChartType,
     MetricDirection,
+    ValueFormat,
 )
 from aisc_plugin_interface.models.evaluation_input import InputDefinition, InputType
 from aisc_plugin_interface.models.task import TaskProgress
@@ -43,6 +44,7 @@ __all__ = [
     "MetricVisualization",
     "ChartType",
     "MetricDirection",
+    "ValueFormat",
     "InputDefinition",
     "InputType",
     "TaskProgress",

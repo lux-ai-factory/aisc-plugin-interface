@@ -31,6 +31,12 @@ class ChartType(str, enum.Enum):
     CSV = "csv"
 
 
+class ValueFormat(str, enum.Enum):
+    """How a chart's values read. PERCENT: the scores are ratios from 0 to 1, shown as 0% to 100%."""
+    NUMBER = "number"
+    PERCENT = "percent"
+
+
 class MetricVisualization(BaseModel):
     chart_type: ChartType
     metrics: list[str]
@@ -39,3 +45,5 @@ class MetricVisualization(BaseModel):
     filter_dimensions: dict[str, list[str | int | bool]] | None = None
     metric_label_dimension: str | None = None
     group_by_dimensions: list[str] | None = None
+    #: None reads as plain numbers, as before the field
+    value_format: ValueFormat | None = None
