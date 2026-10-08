@@ -2,6 +2,7 @@ from aisc_plugin_interface.base_evaluation_plugin import (
     BaseEvaluationPlugin,
     PluginFeatureFlags,
 )
+from aisc_plugin_interface.input_adapters.base_input_adapter import BaseInputAdapter
 from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
 from aisc_plugin_interface.input_providers.parquet_input_provider import ParquetInputProvider
@@ -32,6 +33,7 @@ from aisc_plugin_interface.model_listing import list_openai_models, ModelListing
 __all__ = [
     "BaseEvaluationPlugin",
     "PluginFeatureFlags",
+    "BaseInputAdapter",
     "BaseInputProvider",
     "CsvInputProvider",
     "ParquetInputProvider",
