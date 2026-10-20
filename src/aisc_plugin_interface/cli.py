@@ -33,10 +33,8 @@ def _init_or_update_init_file(src_pkg, context) -> bool:
     if init_file.exists():
         existing = init_file.read_text(encoding="utf-8")
 
-        # check if import line already exists
         import_line = f"from .{context['import_path']} import {context['plugin_name']}"
         if import_line not in existing:
-            # append the new import
             existing = f"{import_line}\n" + existing.rstrip()
         else:
             console.print(
@@ -44,9 +42,7 @@ def _init_or_update_init_file(src_pkg, context) -> bool:
             )
             return False
 
-        # update __all__
         if "__all__" in existing:
-            # find current __all__ list and append the class
             import re
 
             pattern = r"__all__\s*=\s*\[([^\]]*)\]"
@@ -66,13 +62,11 @@ def _init_or_update_init_file(src_pkg, context) -> bool:
                 new_all = ", ".join(f'"{c}"' for c in classes)
                 existing = re.sub(pattern, f"__all__ = [{new_all}]", existing)
         else:
-            # __all__ does not exist, create it
             existing += f"\n__all__ = ['{context['plugin_name']}']\n"
 
         init_file.write_text(existing, encoding="utf-8")
         console.print(f"[green]✅ Updated __init__.py with {context['plugin_name']}[/]")
     else:
-        # __init__.py does not exist, create it from template
         init_file.write_text(init_content, encoding="utf-8")
         console.print(f"[green]✅ Created __init__.py with {context['plugin_name']}[/]")
 
@@ -95,7 +89,6 @@ def init_plugin(force=False):
         "Plugin path (path/to/file, .py added automatically if omitted)", "plugin"
     )
 
-    # remove .py if user included it
     if plugin_path_input.endswith(".py"):
         plugin_path_input = plugin_path_input[:-3]
 

@@ -30,10 +30,12 @@ def evaluation_input(
         input_provider_class = JsonInputProvider
 
     def decorator(cls):
+        # a class's own registry starts as a copy of what it inherits: declaring one more input on a
+        # subclass must not drop the base's (nor add to the base's)
         if "_input_definitions" not in cls.__dict__:
-            cls._input_definitions = []
+            cls._input_definitions = list(getattr(cls, "_input_definitions", []))
         if "_input_provider_types" not in cls.__dict__:
-            cls._input_provider_types = {}
+            cls._input_provider_types = dict(getattr(cls, "_input_provider_types", {}))
 
         if not any(d.name == name for d in cls._input_definitions):
             cls._input_definitions.append(
