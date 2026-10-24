@@ -1,5 +1,3 @@
-import io
-
 from .base_input_provider import BaseInputProvider
 
 
@@ -15,4 +13,5 @@ class OnnxInputProvider(BaseInputProvider):
     def _read_data(self, file_content: bytes):
         import onnxruntime as ort
 
-        return ort.InferenceSession(io.BytesIO(file_content))
+        # onnxruntime loads a model from a path or from bytes, not from a file object
+        return ort.InferenceSession(bytes(file_content))
