@@ -339,17 +339,31 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     def helper(self, role: str) -> HelperModel | None:
         """
         Return the helper model declared with @helper_model for ``role``, its key read from the
-        project secret's environment variable. None when the run binds no model to an optional role.
+        project secret's environment variable. None when the run binds no model to an optional role;
+        a bound model the plugin cannot use (malformed, no endpoint or model, its secret absent) raises.
         """
         if role not in helper_roles_of(type(self)):
             raise ValueError(f"{type(self).__name__} declares no helper model {role!r}")
         name = helper_input_name(role)
-        config = self.get_llm_config(name)
-        if config is None:
+        payload = self.get_input_data(name)
+        if payload is None:
             if any(d.name == name and d.required for d in self.input_definitions):
                 raise ValueError(f"the helper model {role!r} is required but the run binds none")
             return None
-        api_key = self.get_secret(config.secret_key) if config.secret_key else None
+        try:
+            config = LLMConfig.model_validate(payload)
+        except Exception:
+            # the validation message may quote the input's values: name the role only
+            raise ValueError(f"the helper model {role!r} has a malformed input") from None
+        for part in ("endpoint_url", "model"):
+            if not getattr(config, part):
+                raise ValueError(f"the helper model {role!r} is bound without a {part}")
+        api_key = None
+        if config.secret_key:
+            api_key = self.get_secret(config.secret_key)
+            if api_key is None:
+                raise ValueError(f"the helper model {role!r} needs the project secret {config.secret_key!r},"
+                                 " which the run does not provide")
         return HelperModel(role=role, endpoint_url=config.endpoint_url, model=config.model, api_key=api_key)
 
     def get_resource_config(self, name: str, default: ResourceConfig | None = None) -> ResourceConfig | None:

@@ -66,10 +66,36 @@ def test_a_bound_helper_gives_endpoint_model_and_the_key_from_the_secret_environ
                                 api_key="sk-judge")
 
 
-def test_the_key_is_never_read_from_the_input(monkeypatch):
+def test_a_secret_name_with_a_hyphen_reads_the_same_environment_variable(monkeypatch):
+    monkeypatch.setenv("AISC_SECRET_JUDGE_KEY", "sk-judge")
+    judge = bound(RedTeam(), "judge", {**JUDGE_INPUT, "secret_key": "judge-key"}).helper("judge")
+    assert judge.api_key == "sk-judge"
+
+
+@pytest.mark.parametrize("role", ["judge", "attacker"])
+def test_a_bound_helper_whose_secret_is_missing_raises_naming_the_secret(monkeypatch, role):
     monkeypatch.delenv("AISC_SECRET_JUDGE_KEY", raising=False)
-    judge = bound(RedTeam(), "judge", JUDGE_INPUT).helper("judge")
-    assert judge.api_key is None
+    plugin = bound(RedTeam(), role, JUDGE_INPUT)
+    with pytest.raises(ValueError, match=f"{role}.*judge_key"):
+        plugin.helper(role)
+
+
+@pytest.mark.parametrize("role", ["judge", "attacker"])
+@pytest.mark.parametrize("part", ["model", "endpoint_url"])
+def test_a_bound_helper_without_a_model_or_endpoint_raises_naming_it(monkeypatch, role, part):
+    monkeypatch.setenv("AISC_SECRET_JUDGE_KEY", "sk-judge")
+    plugin = bound(RedTeam(), role, {**JUDGE_INPUT, part: ""})
+    with pytest.raises(ValueError, match=f"{role}.*{part}"):
+        plugin.helper(role)
+
+
+@pytest.mark.parametrize("role", ["judge", "attacker"])
+def test_a_malformed_helper_input_raises_instead_of_reading_as_unbound(monkeypatch, role):
+    monkeypatch.setenv("AISC_SECRET_JUDGE_KEY", "sk-judge")
+    plugin = bound(RedTeam(), role, {**JUDGE_INPUT, "api_key": "sk-in-the-input"})
+    with pytest.raises(ValueError, match=f"{role}.*malformed") as raised:
+        plugin.helper(role)
+    assert "sk-in-the-input" not in str(raised.value)
 
 
 def test_the_key_is_not_shown_when_the_helper_is_printed(monkeypatch):
