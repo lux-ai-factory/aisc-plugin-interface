@@ -55,7 +55,8 @@ CARRIED_BY_DEFAULT = ("text", "history")
 def target_access_of(cls) -> str | None:
     """How a plugin class gets what it assesses: "endpoint" (@system_under_test), "inputs"
     (@assesses_inputs), "dataset_through_target" (@dataset_through_target), or None when it declares
-    nothing (the conformance check fails it)."""
+    nothing (the conformance check fails it). ``target_access_required`` says whether a run needs
+    the target's endpoint."""
     return getattr(cls, "target_access", None)
 
 
@@ -67,6 +68,7 @@ def assesses_inputs():
             raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
                              " @dataset_through_target, not two")
         cls.target_access = "inputs"
+        cls.target_access_required = False
         return cls
     return decorator
 
@@ -103,6 +105,7 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
                              " @dataset_through_target, not two")
         cls.target_access = "endpoint"
+        cls.target_access_required = required
         cls.system_under_test_needs = needs
         # The input is declared optional so that a standalone form without targets is not blocked;
         # inside the Configurator the engine makes every evaluation's target required.
@@ -246,6 +249,7 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
         cls.target_access = "dataset_through_target"
         cls.dataset_through_target_inputs = datasets
         cls.dataset_through_target_required = required
+        cls.target_access_required = required
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
         original = cls.evaluate
 

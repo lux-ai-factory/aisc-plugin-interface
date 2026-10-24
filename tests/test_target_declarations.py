@@ -8,7 +8,8 @@ import os
 import pytest
 
 from aisc_plugin_interface import BaseEvaluationPlugin
-from aisc_plugin_interface.system_under_test import (SYSTEM_INPUT, assesses_inputs, system_under_test,
+from aisc_plugin_interface.system_under_test import (SYSTEM_INPUT, assesses_inputs, dataset_through_target,
+                                                     system_under_test,
                                                      target_access_of)
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
@@ -107,3 +108,24 @@ def test_what_is_carried_runs(stub, monkeypatch):
     t = run(Chat, {"key": "k", "endpoints": ENDPOINTS, "connection": "mcas-chat"}, stub, monkeypatch)
     assert t.evaluate({}) == "done" and t.ran["env"] == f"{ROOT}/openai/v1"
     assert Chat.system_under_test_needs == ("history",)
+
+
+def test_each_declaration_records_whether_its_target_access_is_required():
+    @system_under_test(protocols=("openai",), env={"AISC_TARGET_BASE_URL": "base_url"})
+    class Live(Base):
+        pass
+
+    @system_under_test(protocols=("openai",), env={"AISC_TARGET_BASE_URL": "base_url"}, required=False)
+    class Optional(Base):
+        pass
+
+    @dataset_through_target(datasets=("rows",), required=False)
+    class Tables(Base):
+        pass
+
+    @assesses_inputs()
+    class Files(Base):
+        pass
+
+    assert Live.target_access_required is True and Optional.target_access_required is False
+    assert Tables.target_access_required is False and Files.target_access_required is False
