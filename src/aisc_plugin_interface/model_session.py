@@ -13,13 +13,16 @@ Both sessions take ``rows`` as a list of dicts (feature name -> value) and retur
 - A local model file: ``OnnxSession`` over the ONNX the project uploaded (its bytes, or the
   ``onnxruntime.InferenceSession`` an ONNX input provider made of them). It reads its outputs the way the
   catalogue plugins' ``OnnxModelSession`` does: the probability output is the first whose name says
-  prob (else the second output), a label is the more probable class. It also takes what that session
+  prob (else the second output), a label is the more probable class: labels are class indices only
+  when the model has a probability output. It also takes what that session
   takes, a pandas DataFrame or a numpy array of rows in the model's feature order; a list of dicts is
   read in the first row's key order.
 - An AI card target: ``EndpointSession`` sends each row once, in order, through the target's
   connection (the row as the request's ``{{input}}``) and reads the declared ``outputs`` paths in the
   answer: ``label`` (when not declared: the more probable class, 0 or 1) and ``probability`` (of the
-  positive class; ``predict_proba`` gives ``[1-p, p]``). Binary classification only.
+  positive class; ``predict_proba`` gives ``[1-p, p]``). Binary classification only: ``outputs["classes"]``
+  above 2 makes ``assessed_model()`` refuse a card target. Without a probability path ``predict_proba``
+  raises; with only a probability path ``predict`` returns 0 or 1, the more probable class.
 """
 from __future__ import annotations
 
@@ -213,14 +216,18 @@ _NUMPY_TYPES = {"tensor(float)": "float32", "tensor(double)": "float64", "tensor
                 "tensor(int8)": "int8", "tensor(uint8)": "uint8", "tensor(bool)": "bool"}
 
 
-def session_for(plugin) -> ModelSession:
+def session_for(plugin, outputs: dict | None = None) -> ModelSession:
     """The model the run assesses, for ``plugin.assessed_model()``: its local model file when the run
-    bound one, its card target when the run bound that; never one in place of the other."""
+    bound one, its card target when the run bound that; never one in place of the other. ``outputs``, when
+    given, replaces the declared card outputs for this session (validated like a declaration, also when
+    the session is local, which ignores it)."""
     from aisc_plugin_interface.connections import BadReference, EndpointClient, EndpointNotFound
     from aisc_plugin_interface.system_under_test import SYSTEM_INPUT
     from aisc_plugin_interface.targets import is_target
 
     cls = type(plugin)
+    if outputs is not None:
+        outputs = check_outputs(outputs)
     card = getattr(cls, "target_access", None) == "model_session"
     local_input = getattr(cls, "local_model_input", None)
     if not card and local_input is None:
@@ -236,7 +243,8 @@ def session_for(plugin) -> ModelSession:
     if target is None:
         raise ValueError("the run binds no model: neither a local model file"
                          f"{f' in input {local_input!r}' if local_input else ''} nor an AI card target")
-    outputs = cls.model_session_outputs
+    if outputs is None:
+        outputs = cls.model_session_outputs
     if int(outputs.get("classes") or 2) > 2:
         raise ValueError(f"a card target is scored as a binary classifier; this plugin declares"
                          f" {outputs['classes']} classes")

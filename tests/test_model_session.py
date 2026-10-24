@@ -128,6 +128,31 @@ def test_a_card_target_answers_each_row_once_with_its_label_and_probability(syst
     assert len(calls(system)) == 3                         # the session keeps the answers it got
 
 
+def test_a_run_can_give_the_answer_paths_instead_of_the_declared_ones(system):
+    system.route("/score", (200, lambda request: {"verdict": "yes", "scores": {"risk": 0.25}}))
+    model = bound(card_scorer(), target=True).assessed_model(
+        outputs={"label": "verdict", "probability": "scores.risk"})
+    assert model.predict(ROWS[:1]) == ["yes"]
+    assert model.predict_proba(ROWS[:1]) == [pytest.approx([0.75, 0.25])]
+    # this session only: the next one reads the declared paths again
+    assert bound(card_scorer(), target=True).assessed_model().outputs == OUTPUTS
+
+
+def test_per_run_answer_paths_that_are_not_valid_are_refused_naming_the_key(system):
+    plugin = bound(card_scorer(), target=True)
+    with pytest.raises(ValueError, match="colour"):
+        plugin.assessed_model(outputs={"label": "verdict", "colour": "c"})
+    with pytest.raises(ValueError, match="label"):
+        plugin.assessed_model(outputs={})
+    with pytest.raises(ValueError, match="classes"):
+        plugin.assessed_model(outputs={"label": "verdict", "classes": 1})
+
+
+def test_per_run_answer_paths_naming_several_classes_are_refused_on_a_card_target(system):
+    with pytest.raises(ValueError, match="3 classes"):
+        bound(card_scorer(), target=True).assessed_model(outputs={"label": "verdict", "classes": 3})
+
+
 def test_probabilities_then_labels_send_each_row_once(system):
     model = bound(card_scorer(), target=True).assessed_model()
     model.predict_proba(ROWS)
@@ -326,3 +351,10 @@ def test_no_rows_give_no_predictions_without_running_the_model(onnx_bytes):
     model = OnnxSession(onnx_bytes)
     model.session = None                                    # any run would fail
     assert model.predict([]) == [] and model.predict_proba([]) == []
+
+
+def test_a_local_session_ignores_per_run_answer_paths_but_still_validates_them(onnx_bytes):
+    plugin = bound(either_scorer(), model=onnx_bytes)
+    assert isinstance(plugin.assessed_model(outputs={"label": "verdict"}), OnnxSession)
+    with pytest.raises(ValueError, match="colour"):
+        plugin.assessed_model(outputs={"label": "verdict", "colour": "c"})

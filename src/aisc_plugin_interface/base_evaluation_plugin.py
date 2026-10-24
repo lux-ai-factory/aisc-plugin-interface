@@ -367,17 +367,24 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
                                  " which the run does not provide")
         return HelperModel(role=role, endpoint_url=config.endpoint_url, model=config.model, api_key=api_key)
 
-    def assessed_model(self) -> "ModelSession":
+    def assessed_model(self, outputs: dict | None = None) -> "ModelSession":
         """
         Return the model this run assesses, with ``predict(rows)`` and ``predict_proba(rows)``: the local
         ONNX file when the run binds the plugin's local model input, the AI card target (through its
         connection) when it binds the target. Both bound, or neither, raises ValueError. ``predict`` gives
         the card target's own label values (what its answer carries at the declared label path), and
-        class indices (0, 1, ...) for the local model.
+        class indices (0, 1, ...) for the local model, when the ONNX model has a probability output.
+
+        ``outputs`` (same keys as ``model_session(outputs=...)``) replaces the declared outputs for this
+        session only, for a card target whose answer fields come from the run's config. It is validated
+        like a declaration (ValueError naming the key); a local session ignores it. A card target is
+        scored as a binary classifier: ``outputs["classes"]`` above 2 raises. ``predict_proba`` on a card
+        session without a probability path raises; ``predict`` with only a probability path returns 0 or
+        1, the more probable class.
         """
         from aisc_plugin_interface.model_session import session_for
 
-        return session_for(self)
+        return session_for(self, outputs)
 
     def get_resource_config(self, name: str, default: ResourceConfig | None = None) -> ResourceConfig | None:
         """
