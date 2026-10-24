@@ -40,6 +40,12 @@ from aisc_plugin_interface.assesses import (
     card_protocols_of,
     card_needs_connection,
 )
+from aisc_plugin_interface.helpers import (
+    helper_model,
+    HELPER_ROLES,
+    helper_roles_of,
+    HelperModel,
+)
 
 __all__ = [
     "BaseEvaluationPlugin",
@@ -79,4 +85,8 @@ __all__ = [
     "target_kinds_of",
     "card_protocols_of",
     "card_needs_connection",
+    "helper_model",
+    "HELPER_ROLES",
+    "helper_roles_of",
+    "HelperModel",
 ]
