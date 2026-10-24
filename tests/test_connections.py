@@ -355,3 +355,8 @@ def test_an_answer_past_the_size_cap_is_refused_not_read_whole(stub, monkeypatch
         client(stub).ask("q", lang="en")
     stub.route("/chat", (200, {"answer": "short"}))
     assert client(stub).ask("q", lang="en").text == "short"
+
+
+def test_a_descriptor_shown_in_a_log_or_a_traceback_has_no_key():
+    d = c.Descriptor.from_dict(dict(MCAS, base_url="https://mcas.example"))
+    assert "s3cr3t-value" not in repr(d) and d.secret == "s3cr3t-value"

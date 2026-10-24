@@ -138,7 +138,7 @@ class Descriptor:
     refusal: dict | None = None
     model: str | None = None
     timeout_s: int = 60
-    secret: str | None = None
+    secret: str | None = field(default=None, repr=False)   # never in a log or a traceback
     updated_at: str | None = None
     protocol_version: str | None = None      # a2a: "1.0" (default) or "0.3"
     #: the assessment target this connection is the endpoint of (key, kind, label, ...)
