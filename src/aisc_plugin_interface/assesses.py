@@ -24,10 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
+from aisc_plugin_interface.model_session import check_outputs
 from aisc_plugin_interface.models.evaluation_input import InputType
 from aisc_plugin_interface.system_under_test import (
-    assesses_inputs, dataset_through_target, declaring_base, inherited_declaration, system_under_test,
-    target_access_of,
+    SYSTEM_INPUT, _one_declaration, assesses_inputs, dataset_through_target, declaring_base,
+    inherited_declaration, system_under_test, target_access_of,
 )
 
 CARD, LOCAL_MODEL = "card", "local_model"
@@ -67,13 +69,18 @@ def inputs_access() -> CardAccess:
 
 def model_session(outputs: dict) -> CardAccess:
     """The plugin scores rows with a model: the target answers each row, ``outputs`` says where its
-    answer carries the label and the probability."""
-    outputs = dict(outputs)
+    answer carries the label and the probability (see ``model_session`` the module, and
+    ``self.assessed_model()``)."""
+    outputs = check_outputs(outputs)
 
     def apply(cls, required):
+        _one_declaration(cls, "model_session")
         cls.target_access = "model_session"
+        cls.target_access_required = required
         cls.model_session_outputs = outputs
-        return cls
+        # optional in the form, like the other card accesses' target input; ``required`` is what a run needs
+        return evaluation_input(name=SYSTEM_INPUT, label="Target of the assessment (the system, or one of its"
+                                " components)", input_type=InputType.RESOURCE, required=False)(cls)
 
     return CardAccess("model_session", apply)
 

@@ -30,6 +30,7 @@ from aisc_plugin_interface.utils import classproperty
 from aisc_plugin_interface.models.task import TaskProgress
 from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
+from aisc_plugin_interface.model_session import ModelSession
 
 ProgressCallback: TypeAlias = Callable[[TaskProgress], None]
 ArtifactCallback: TypeAlias = Callable[[str, bytes], None]
@@ -365,6 +366,16 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
                 raise ValueError(f"the helper model {role!r} needs the project secret {config.secret_key!r},"
                                  " which the run does not provide")
         return HelperModel(role=role, endpoint_url=config.endpoint_url, model=config.model, api_key=api_key)
+
+    def assessed_model(self) -> "ModelSession":
+        """
+        Return the model this run assesses, with ``predict(rows)`` and ``predict_proba(rows)``: the local
+        ONNX file when the run binds the plugin's local model input, the AI card target (through its
+        connection) when it binds the target. Both bound, or neither, raises ValueError.
+        """
+        from aisc_plugin_interface.model_session import session_for
+
+        return session_for(self)
 
     def get_resource_config(self, name: str, default: ResourceConfig | None = None) -> ResourceConfig | None:
         """
