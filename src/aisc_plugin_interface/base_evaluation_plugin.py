@@ -371,7 +371,9 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         """
         Return the model this run assesses, with ``predict(rows)`` and ``predict_proba(rows)``: the local
         ONNX file when the run binds the plugin's local model input, the AI card target (through its
-        connection) when it binds the target. Both bound, or neither, raises ValueError.
+        connection) when it binds the target. Both bound, or neither, raises ValueError. ``predict`` gives
+        the card target's own label values (what its answer carries at the declared label path), and
+        class indices (0, 1, ...) for the local model.
         """
         from aisc_plugin_interface.model_session import session_for
 

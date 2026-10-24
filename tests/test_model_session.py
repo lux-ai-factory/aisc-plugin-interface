@@ -16,6 +16,7 @@ from aisc_plugin_interface import (
     onnx,
 )
 from aisc_plugin_interface.connections import EndpointBadResponse, EndpointError
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.model_session import EndpointSession, ModelSession, OnnxSession
 from aisc_plugin_interface.system_under_test import SYSTEM_INPUT
 
@@ -110,6 +111,9 @@ def test_the_builder_needs_a_label_or_a_probability_output():
         model_session(outputs={})
     with pytest.raises(ValueError, match="colour"):
         model_session(outputs={"label": "decision", "colour": "c"})
+    for classes in (1, "2", True, 2.0):
+        with pytest.raises(ValueError, match="classes"):
+            model_session(outputs={"label": "decision", "classes": classes})
 
 
 # an AI card target
@@ -121,7 +125,14 @@ def test_a_card_target_answers_each_row_once_with_its_label_and_probability(syst
     assert len(calls(system)) == 3
     assert [json.loads(r["body"]) for r in calls(system)] == ROWS
     assert model.predict_proba(ROWS) == [pytest.approx(p) for p in ([0.5, 0.5], [0.2, 0.8], [0.98, 0.02])]
-    assert len(calls(system)) == 6
+    assert len(calls(system)) == 3                         # the session keeps the answers it got
+
+
+def test_probabilities_then_labels_send_each_row_once(system):
+    model = bound(card_scorer(), target=True).assessed_model()
+    model.predict_proba(ROWS)
+    assert model.predict(list(reversed(ROWS))) == ["approve", "decline", "approve"]
+    assert len(calls(system)) == 3
 
 
 def test_without_a_label_output_the_label_is_the_more_probable_class(system):
@@ -136,6 +147,14 @@ def test_a_missing_probability_in_the_answer_fails_naming_the_path_and_the_row(s
         model.predict_proba(ROWS)
 
 
+@pytest.mark.parametrize("label", [None, {"code": 1}, ["approve"]])
+def test_a_label_that_is_not_a_value_fails_naming_the_path_and_the_row(system, label):
+    system.route("/score", (200, score), (200, {"decision": label, "risk": {"p": 0.1}}))
+    model = bound(card_scorer(), target=True).assessed_model()
+    with pytest.raises(EndpointBadResponse, match=r"row 2.*'decision'"):
+        model.predict(ROWS)
+
+
 def test_a_probability_that_is_not_one_fails_naming_the_row(system):
     system.route("/score", (200, {"decision": "approve", "risk": {"p": "high"}}))
     model = bound(card_scorer(), target=True).assessed_model()
@@ -148,6 +167,25 @@ def test_a_refusal_fails_naming_the_row(system):
     model = bound(card_scorer(), target=True).assessed_model()
     with pytest.raises(EndpointError, match="row 3.*outside the markets"):
         model.predict(ROWS)
+
+
+def test_the_key_echoed_by_the_target_is_not_in_the_errors(system):
+    system.route("/score", (502, {"detail": {"reason": "bad key s3cr3t"}}))
+    with pytest.raises(EndpointError) as refused:
+        bound(card_scorer(), target=True).assessed_model().predict(ROWS)
+    system.route("/score", (200, {"decision": "approve", "risk": {"p": "s3cr3t"}}))
+    with pytest.raises(EndpointError) as unreadable:
+        bound(card_scorer(), target=True).assessed_model().predict_proba(ROWS)
+    assert all("s3cr3t" not in str(e.value) for e in (refused, unreadable))
+
+
+def test_any_failure_while_sending_a_row_names_the_row():
+    class Broken:
+        def ask(self, row):
+            raise ValueError("cannot encode the row")
+
+    with pytest.raises(ValueError, match="row 1: cannot encode the row"):
+        EndpointSession(Broken(), OUTPUTS).predict(ROWS)
 
 
 def test_a_failed_call_fails_naming_the_row(system):
@@ -171,10 +209,18 @@ def test_neither_a_model_file_nor_a_target_raises():
         bound(either_scorer()).assessed_model()
 
 
+class RawBytes(BaseInputProvider):
+    def _read_data(self, file_content):
+        return file_content
+
+
 def test_a_model_file_and_a_target_both_bound_raises(system):
-    onnx_ = pytest.importorskip("onnx", reason="the local model session runs an ONNX model built with onnx")
-    pytest.importorskip("onnxruntime", reason="the local model session runs its model with onnxruntime")
-    t = bound(either_scorer(), target=True, model=tiny_model(onnx_))
+    @assesses(card=model_session(outputs=OUTPUTS), local_model=onnx(input="model"))
+    @evaluation_input(name="model", label="Model", input_provider_class=RawBytes, input_type=InputType.MODEL)
+    class Scorer(Base):
+        pass
+
+    t = bound(Scorer, target=True, model=b"a model file")
     with pytest.raises(ValueError, match="both"):
         t.assessed_model()
     assert system.seen == []
@@ -274,3 +320,9 @@ def test_a_row_missing_a_feature_fails_naming_the_row(onnx_bytes):
     with pytest.raises(ValueError, match="row 2.*months"):
         OnnxSession(onnx_bytes).predict([{"amount": 1.0, "months": 1.0}, {"amount": 2.0}])
 
+
+
+def test_no_rows_give_no_predictions_without_running_the_model(onnx_bytes):
+    model = OnnxSession(onnx_bytes)
+    model.session = None                                    # any run would fail
+    assert model.predict([]) == [] and model.predict_proba([]) == []

@@ -23,9 +23,10 @@ Both sessions take ``rows`` as a list of dicts (feature name -> value) and retur
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Protocol, runtime_checkable
 
-from aisc_plugin_interface.connections import EndpointBadResponse, EndpointError, extract
+from aisc_plugin_interface.connections import EndpointBadResponse, EndpointError, _scrub, extract
 
 #: what ``model_session(outputs=...)`` may declare
 OUTPUT_KEYS = ("label", "probability", "classes")
@@ -46,6 +47,9 @@ def check_outputs(outputs: dict) -> dict:
         raise ValueError(f"outputs: {', '.join(map(repr, unknown))} unknown (known: {', '.join(OUTPUT_KEYS)})")
     if not outputs.get("label") and not outputs.get("probability"):
         raise ValueError("outputs: declare where the answer carries the label, the probability or both")
+    classes = outputs.get("classes")
+    if classes is not None and (isinstance(classes, bool) or not isinstance(classes, int) or classes < 2):
+        raise ValueError(f"outputs: classes is the number of classes, a whole number from 2: {classes!r}")
     return outputs
 
 
@@ -58,16 +62,27 @@ class RowRefused(EndpointError):
 
 
 class EndpointSession:
-    """A card target's model, reached through its connection (see the module docstring)."""
+    """A card target's model, reached through its connection (see the module docstring). The session
+    keeps the answers it got: a row (the same values) is sent once, however often it is scored."""
 
     def __init__(self, client, outputs: dict):
         self.client = client
         self.outputs = check_outputs(outputs)
+        self._answered: dict[str, Any] = {}
+        descriptor = getattr(client, "descriptor", None)
+        self._secret = getattr(descriptor, "secret", None)
 
     def predict(self, rows) -> list:
         if not self.outputs.get("label"):
             return [int(p[1] > p[0]) for p in self.predict_proba(rows)]
-        return [self._output(answer, n, "label") for n, answer in self._answers(rows)]
+        labels = []
+        for n, answer in self._answers(rows):
+            label = self._output(answer, n, "label")
+            if label is None or isinstance(label, (dict, list)):
+                raise ModelOutputMissing(f"row {n}: the label at {self.outputs['label']!r} is"
+                                         f" {'empty' if label is None else 'not a single value'}")
+            labels.append(label)
+        return labels
 
     def predict_proba(self, rows) -> list[list[float]]:
         if not self.outputs.get("probability"):
@@ -76,22 +91,34 @@ class EndpointSession:
         for n, answer in self._answers(rows):
             p = self._output(answer, n, "probability")
             if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 <= p <= 1:
+                said = _scrub(str(p), self._secret)[:100]
                 raise ModelOutputMissing(f"row {n}: the probability at {self.outputs['probability']!r} is"
-                                         f" not a number from 0 to 1: {str(p)[:100]!r}")
+                                         f" not a number from 0 to 1: {said!r}")
             proba.append([1.0 - float(p), float(p)])
         return proba
 
     def _answers(self, rows):
-        """(row number from 1, the answer's value) for each row, one request per row, in order."""
+        """(row number from 1, the answer's value) for each row, in order; a row not answered yet is sent."""
         from aisc_plugin_interface.system_under_test import _sent
 
         for n, row in enumerate(rows, start=1):
             try:
-                answer = self.client.ask({k: _sent(v) for k, v in dict(row).items()})
+                sent = {k: _sent(v) for k, v in dict(row).items()}
+                key = json.dumps(sent, sort_keys=True, default=str)
+                if key not in self._answered:
+                    self._answered[key] = self.client.ask(sent)
             except EndpointError as exc:
                 raise type(exc)(f"row {n}: {exc}", status=exc.status) from None
+            except Exception as exc:
+                try:
+                    named = type(exc)(f"row {n}: {exc}")
+                except Exception:
+                    named = RuntimeError(f"row {n}: {type(exc).__name__}: {exc}")
+                raise named from exc
+            answer = self._answered[key]
             if answer.refused:
-                raise RowRefused(f"row {n}: the target refused it: {answer.refusal_reason}", status=answer.status)
+                reason = _scrub(str(answer.refusal_reason), self._secret)
+                raise RowRefused(f"row {n}: the target refused it: {reason}", status=answer.status)
             yield n, answer.text
 
     def _output(self, answer, n: int, name: str) -> Any:
@@ -121,6 +148,8 @@ class OnnxSession:
     def predict(self, rows) -> list:
         import numpy as np
 
+        if len(rows) == 0:
+            return []
         if self._probability is not None:
             return [int(i) for i in np.argmax(self._proba(rows), axis=1)]
         labels = np.asarray(self._run(rows)[0])
@@ -129,6 +158,8 @@ class OnnxSession:
         return labels.tolist()
 
     def predict_proba(self, rows) -> list[list[float]]:
+        if len(rows) == 0:
+            return []
         return self._proba(rows).tolist()
 
     def _proba(self, rows):
