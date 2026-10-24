@@ -60,9 +60,22 @@ def target_access_of(cls) -> str | None:
     return getattr(cls, "target_access", None)
 
 
+def declaring_base(cls, *attributes: str):
+    """The nearest base class that sets one of ``attributes`` itself, or None."""
+    return next((base for base in cls.__mro__[1:] if any(a in base.__dict__ for a in attributes)), None)
+
+
+def inherited_declaration(cls, base) -> ValueError:
+    return ValueError(f"{cls.__name__}: it inherits what {base.__name__} assesses; declare it on one class only")
+
+
 def _one_declaration(cls, access: str) -> None:
     """A class states how it gets what it assesses once: one of these decorators, or @assesses (whose
-    card builders apply them before it records the kinds)."""
+    card builders apply them before it records the kinds). A subclass of an @assesses class inherits
+    its declaration and may not restate it."""
+    base = declaring_base(cls, "target_kinds")
+    if base is not None:
+        raise inherited_declaration(cls, base)
     if target_access_of(cls) not in (None, access) or "target_kinds" in cls.__dict__:
         raise ValueError(f"{cls.__name__}: declare one of @assesses, @system_under_test, @assesses_inputs or"
                          " @dataset_through_target, not two")

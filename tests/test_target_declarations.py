@@ -9,8 +9,7 @@ import pytest
 
 from aisc_plugin_interface import BaseEvaluationPlugin
 from aisc_plugin_interface.system_under_test import (SYSTEM_INPUT, assesses_inputs, dataset_through_target,
-                                                     system_under_test,
-                                                     target_access_of)
+                                                     system_under_test, target_access_of)
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
 ROOT = f"http://platform:8000/internal/facade/{PID}/mcas-chat"
@@ -129,3 +128,20 @@ def test_each_declaration_records_whether_its_target_access_is_required():
 
     assert Live.target_access_required is True and Optional.target_access_required is False
     assert Tables.target_access_required is False and Files.target_access_required is False
+
+
+def test_an_old_declaration_on_a_subclass_of_an_old_declaration_works_as_before():
+    @system_under_test(protocols=("openai",), env={"AISC_TARGET_BASE_URL": "base_url"})
+    class Live(Base):
+        pass
+
+    @system_under_test(protocols=("aisc",), env={"AISC_TARGET_BASE_URL": "ask_url"}, required=False)
+    class Again(Live):
+        pass
+
+    assert target_access_of(Again) == "endpoint" and Again.system_under_test_protocols == ("aisc",)
+    assert Again.target_access_required is False
+    with pytest.raises(ValueError, match="not two"):
+        @assesses_inputs()
+        class Other(Live):
+            pass

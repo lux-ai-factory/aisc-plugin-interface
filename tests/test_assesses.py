@@ -85,6 +85,7 @@ def test_a_card_builder_records_the_card_kind_and_its_access():
         "endpoint", "dataset_through_target", "inputs", "model_session"]
     assert Scorer.model_session_outputs == {"label": "label", "probability": "score"}
     assert all(c.local_model_input is None for c in (Live, Tables, Files, Scorer))
+    assert target_access_of(Scorer) == "model_session"
 
 
 def test_a_local_model_names_the_model_input_it_reads():
@@ -207,6 +208,63 @@ def test_assesses_and_an_old_declaration_on_one_class_are_refused():
             @assesses(card=inputs_access())
             class Above(Base):
                 pass
+
+
+# subclasses
+
+def test_a_subclass_inherits_the_declaration_unchanged():
+    @assesses(card=system_under_test_access(protocols=("openai",), env=ENV), local_model=onnx())
+    @model_input
+    class Live(Base):
+        pass
+
+    class Sub(Live):
+        pass
+
+    assert target_kinds_of(Sub) == ("card", "local_model") and card_protocols_of(Sub) == ("openai",)
+    assert card_needs_connection(Sub) and Sub.local_model_input == "model"
+
+
+def test_assesses_on_a_subclass_of_an_assesses_base_is_refused():
+    @assesses(card=inputs_access())
+    class Files(Base):
+        pass
+
+    with pytest.raises(ValueError) as exc:
+        @assesses(card=inputs_access())
+        class Sub(Files):
+            pass
+
+    assert str(exc.value) == "Sub: it inherits what Files assesses; declare it on one class only"
+
+
+def test_an_old_declaration_on_a_subclass_of_an_assesses_base_is_refused():
+    @assesses(card=inputs_access())
+    class Files(Base):
+        pass
+
+    for declaration in (system_under_test(protocols=("openai",), env=ENV),
+                        dataset_through_target(datasets=("rows",)), assesses_inputs()):
+        with pytest.raises(ValueError) as exc:
+            @declaration
+            class Sub(Files):
+                pass
+
+        assert str(exc.value) == "Sub: it inherits what Files assesses; declare it on one class only"
+
+
+def test_assesses_on_a_subclass_of_an_old_declaration_is_refused():
+    @system_under_test(protocols=("openai",), env=ENV)
+    class Live(Base):
+        pass
+
+    with pytest.raises(ValueError) as exc:
+        @assesses(local_model=onnx())
+        @model_input
+        class Sub(Live):
+            pass
+
+    assert str(exc.value) == "Sub: it inherits what Live assesses; declare it on one class only"
 
 
 # what the engine reads

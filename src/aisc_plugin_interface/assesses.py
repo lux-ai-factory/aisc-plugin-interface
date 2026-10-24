@@ -15,8 +15,9 @@ With both, the card access is optional at run time: a run assesses one or the ot
 
 The engine reads the declaration with ``target_kinds_of``, ``card_protocols_of`` and
 ``card_needs_connection`` and builds the evaluation form from it, so a kind the plugin does not declare
-cannot be picked. A plugin declared with @system_under_test, @dataset_through_target or
-@assesses_inputs alone reads as ``card=`` with no local model.
+cannot be picked. A subclass inherits its base's declaration and may not restate it. A plugin
+declared with @system_under_test, @dataset_through_target or @assesses_inputs alone reads as ``card=``
+with no local model.
 """
 from __future__ import annotations
 
@@ -25,7 +26,8 @@ from typing import Callable
 
 from aisc_plugin_interface.models.evaluation_input import InputType
 from aisc_plugin_interface.system_under_test import (
-    assesses_inputs, dataset_through_target, system_under_test, target_access_of,
+    assesses_inputs, dataset_through_target, declaring_base, inherited_declaration, system_under_test,
+    target_access_of,
 )
 
 CARD, LOCAL_MODEL = "card", "local_model"
@@ -44,7 +46,6 @@ class CardAccess:
 class LocalModel:
     """A local model file, read through the plugin's model input named ``input``."""
     input: str
-    format: str = "onnx"
 
 
 def system_under_test_access(protocols, fields=None, env=None, needs=()) -> CardAccess:
@@ -70,6 +71,7 @@ def model_session(outputs: dict) -> CardAccess:
     outputs = dict(outputs)
 
     def apply(cls, required):
+        cls.target_access = "model_session"
         cls.model_session_outputs = outputs
         return cls
 
@@ -87,7 +89,11 @@ def assesses(card: CardAccess | None = None, local_model: LocalModel | None = No
         raise ValueError("declare what the plugin assesses: card=, local_model= or both")
 
     def decorator(cls):
-        if target_access_of(cls) is not None and getattr(cls, "target_kinds", None) is None:
+        # a subclass inherits its base's declaration unchanged, whichever form the base used
+        base = declaring_base(cls, "target_kinds", "target_access")
+        if base is not None:
+            raise inherited_declaration(cls, base)
+        if "target_access" in cls.__dict__ or "target_kinds" in cls.__dict__:
             raise ValueError(f"{cls.__name__}: declare one of @assesses, @system_under_test, @assesses_inputs or"
                              " @dataset_through_target, not two")
         if local_model is not None:
