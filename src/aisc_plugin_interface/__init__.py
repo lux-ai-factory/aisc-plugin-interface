@@ -29,6 +29,17 @@ from aisc_plugin_interface.models.llm import LLMConfig
 from aisc_plugin_interface.models.resource import ResourceConfig
 from aisc_plugin_interface.models.component_value import parse_component_value
 from aisc_plugin_interface.model_listing import list_openai_models, ModelListingError
+from aisc_plugin_interface.assesses import (
+    assesses,
+    onnx,
+    system_under_test_access,
+    dataset_through_target_access,
+    inputs_access,
+    model_session,
+    target_kinds_of,
+    card_protocols_of,
+    card_needs_connection,
+)
 
 __all__ = [
     "BaseEvaluationPlugin",
@@ -59,4 +70,13 @@ __all__ = [
     "parse_component_value",
     "list_openai_models",
     "ModelListingError",
+    "assesses",
+    "onnx",
+    "system_under_test_access",
+    "dataset_through_target_access",
+    "inputs_access",
+    "model_session",
+    "target_kinds_of",
+    "card_protocols_of",
+    "card_needs_connection",
 ]

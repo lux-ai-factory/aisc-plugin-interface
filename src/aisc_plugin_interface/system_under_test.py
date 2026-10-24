@@ -60,13 +60,19 @@ def target_access_of(cls) -> str | None:
     return getattr(cls, "target_access", None)
 
 
+def _one_declaration(cls, access: str) -> None:
+    """A class states how it gets what it assesses once: one of these decorators, or @assesses (whose
+    card builders apply them before it records the kinds)."""
+    if target_access_of(cls) not in (None, access) or "target_kinds" in cls.__dict__:
+        raise ValueError(f"{cls.__name__}: declare one of @assesses, @system_under_test, @assesses_inputs or"
+                         " @dataset_through_target, not two")
+
+
 def assesses_inputs():
     """Class decorator for a plugin that only reads its inputs (datasets, models, files) and calls no
     live system: nothing changes at run time, the declaration is what the conformance check reads."""
     def decorator(cls):
-        if target_access_of(cls) not in (None, "inputs"):
-            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
-                             " @dataset_through_target, not two")
+        _one_declaration(cls, "inputs")
         cls.target_access = "inputs"
         cls.target_access_required = False
         return cls
@@ -101,9 +107,7 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
             raise ValueError(f"{target}: {role!r} is not a role of {first} ({', '.join(ROLES[first])})")
 
     def decorator(cls):
-        if target_access_of(cls) not in (None, "endpoint"):
-            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
-                             " @dataset_through_target, not two")
+        _one_declaration(cls, "endpoint")
         cls.target_access = "endpoint"
         cls.target_access_required = required
         cls.system_under_test_needs = needs
@@ -243,9 +247,7 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
         raise ValueError("datasets: name at least one dataset input")
 
     def decorator(cls):
-        if target_access_of(cls) not in (None, "dataset_through_target"):
-            raise ValueError(f"{cls.__name__}: declare one of @system_under_test, @assesses_inputs or"
-                             " @dataset_through_target, not two")
+        _one_declaration(cls, "dataset_through_target")
         cls.target_access = "dataset_through_target"
         cls.dataset_through_target_inputs = datasets
         cls.dataset_through_target_required = required
