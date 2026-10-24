@@ -448,14 +448,26 @@ class ScoringPlugin(BaseEvaluationPlugin):
 ```
 
 - With a **local model file**, the session runs the uploaded ONNX model; labels are class indices
-  (0, 1, ...). Any number of classes works.
+  (0, 1, ...) when the ONNX model has a probability output. Any number of classes works.
 - With a **card target**, the session sends each row once, in order, through the target's connection (the
   row is the request's `{{input}}`) and reads the answer at the paths declared in `outputs`: `label`
   and `probability` (of the positive class; `predict_proba` gives `[1-p, p]`). `predict` returns the
-  target's own label values. Declare `label`, `probability` or both. A target with several classes is
-  refused: **binary classification only on card targets**. An answer lacking a declared path, a
+  target's own label values. Declare `label`, `probability` or both. `predict_proba` on a card session
+  without a probability path raises; `predict` with only a probability path returns 0 or 1, the more
+  probable class. Declaring `outputs["classes"]` above 2 makes `assessed_model()` refuse a card target:
+  **binary classification only on card targets**. An answer lacking a declared path, a
   probability outside 0 to 1 and a refused row stop the run with the row number and the path.
 - A run that binds both a model file and a card target, or neither, raises `ValueError`.
+- When the answer fields differ per system, give the paths per run: `assessed_model(outputs={...})`
+  replaces the declared `outputs` for that session only. It is checked like a declaration (an unknown
+  key or no label and probability raises `ValueError` naming it); a local model ignores it but still
+  checks it.
+
+```python
+    def evaluate(self, config_data):
+        model = self.assessed_model(outputs={"label": config_data["label_field"],
+                                             "probability": config_data["probability_field"]})
+```
 
 ### 13.4 Helper models: `@helper_model` and `self.helper(role)`
 
