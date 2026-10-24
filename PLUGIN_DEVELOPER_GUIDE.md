@@ -355,102 +355,184 @@ output = plugin.evaluate({"score_column": "score", "threshold": 0.5})
 assert [m.name for m in plugin.export_metrics(output)] == ["Average score", "Pass rate"]
 ```
 
-## 13. How a plugin gets what it assesses
+## 13. What a plugin assesses, and the models that help it
 
-This section needs the `feat/unified-modules` version of the library (see section 4).
+This section needs the `feat/unified-modules` version of the library (see section 4), from version 0.2.9.
 
-Every evaluation names its **target**: the AI system, or one component of its AI card (the chat
-assistant, the scoring model, the training data). A target that is reached over the network has an
-**endpoint**, set once under **Manage, Components and connections**. Models a plugin uses for its own work
-(an LLM as a judge, an attacker, a grader, embeddings) are **tool models**, set in the plugin's form
-on the execution page. Every plugin follows the same rules:
+Two kinds of model meet in a plugin, and the library keeps them apart:
 
-1. **Declare how the plugin gets what it assesses**, with exactly one of:
-   - `@system_under_test(...)`: it calls its target, only through the target's endpoint (13.1, 13.2);
-   - `@assesses_inputs()`: it only reads its inputs (datasets, models, files) and calls no system;
-   - `@dataset_through_target(datasets=("reference-dataset", ...))`: it analyses tables, and each row is
-     first sent through the target's endpoint, whose answer becomes columns `target.<field>` (a refusal
-     `target.refused` and `target.refusal_reason`, a failed call `target.error`; a field of the system's
-     own answer named `refused`, `refusal_reason`, `error` or `answer` goes under
-     `target.answer.<field>`, so it is never taken for the wrapper's flag). Dates and times are sent as
-     ISO text (a missing one as null) and decimals as numbers. The plugin reads the
-     enriched table in the form it had it (a DataFrame stays a DataFrame, rows stay rows, whatever its
-     input's provider); the answers are saved as `target-answers-<dataset>.csv`, where a text cell or
-     column name starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` so a
-     spreadsheet does not run it as a formula (numbers are written as they are). The run settings
-     `target_calls_at_once` (default 1, at most 16) and `target_row_limit` (0: every row) are read
-     from the plugin's config when its form has them. Which fields of a row are sent is the
-     endpoint's business: its body template (`{{input}}` sends the whole row). A connection bound
-     directly (`connection:<pid>/<name>`) works as well as a target. With `required=False` a target
-     the platform says has no endpoint (training data, say) runs the plugin on the uploads as they
-     are; any other failure to resolve it (no such target or project, a platform that does not
-     answer) still stops the run, and so does a target whose every call failed (one failed row is
-     only that row's `target.error`).
+- The **target** is what the evaluation assesses: the AI system, or one component of its AI card (the
+  chat assistant, the scoring model, the training data), or a model file the user uploaded to the
+  project. A target reached over the network has an **endpoint**, set once under **Manage, Components
+  and connections**.
+- A **helper model** is a model the plugin uses as a tool: a judge, an attacker, a grader, an
+  embedder or a generator. It is never what is assessed.
 
-   `target_access_of(cls)` reads the declaration; `scripts/verify-plugins.sh` fails a plugin with none.
-2. **Never take the target from the form.** With a target bound, its address, key and model come from
-   the platform for the length of the run. Write them into the plugin's own target fields, or into
-   variables named for the target (`AISC_TARGET_BASE_URL`, `AISC_TARGET_API_KEY`, `AISC_TARGET_MODEL`),
-   never into variables a tool model also reads (`OPENAI_API_KEY`, `OPENAI_BASE_URL` and the like).
-3. **Give every tool model its own fields** in the form (model, key, and address where it makes
-   sense), and pass them to its client explicitly: no fallback to a shared environment variable.
-4. **Say what the plugin needs from the endpoint beyond text**: `needs=("tools",)` or
-   `needs=("logprobs",)`. The platform's endpoint carries text and a history; a run whose endpoint
-   doesn't carry a need is refused before the tool starts, with the reason. A target without an
-   endpoint is refused the same way ("<target> has no endpoint: set one under Manage, Targets and
-   endpoints").
-5. **The run records what it reached**: the decorator and the client save `connection-<name>.json`
-   with the connection, the target and the protocol (never the key).
+### 13.1 What a plugin assesses: `@assesses`
 
-The evaluation form lists every target, since inputs-only plugins need targets without an endpoint;
-each name ends in "· endpoint: <name>" or "· no endpoint".
+A plugin states what it assesses with `@assesses(card=..., local_model=...)`; at least one of the two.
+
+- `card=` says how the plugin reaches a target defined on the **AI card** (the system or one of its
+  components). It takes one of these builders:
+
+  | Builder | The plugin |
+  |---|---|
+  | `system_under_test_access(protocols=("openai",), fields=..., env=..., needs=...)` | calls its target, only through the target's endpoint (13.5); as `@system_under_test` |
+  | `dataset_through_target_access(datasets=("reference-dataset",))` | analyses tables; each row is first sent through the target's endpoint, as `@dataset_through_target` (13.6) |
+  | `inputs_access()` | only reads its inputs (datasets, models, files) and calls no system; as `@assesses_inputs` |
+  | `model_session(outputs={...})` | scores rows with a model, whichever it is (13.3) |
+
+- `local_model=onnx(input="model")` says the plugin can assess a **local model file**: the ONNX file a
+  person uploaded to the project, read through the plugin's own model input (`InputType.MODEL`). Declare
+  that input below `@assesses`; the declaration fails at import if it is missing.
 
 ```python
-from aisc_plugin_interface.system_under_test import assesses_inputs, system_under_test
+from aisc_plugin_interface import (
+    BaseEvaluationPlugin, InputType, OnnxInputProvider, assesses, evaluation_input, onnx,
+    system_under_test_access,
+)
 
 
-@assesses_inputs()
-class DriftPlugin(BaseEvaluationPlugin[DriftConfig]):
-    ...                                   # reads its uploaded datasets only
+@assesses(card=system_under_test_access(protocols=("openai",),
+                                        env={"AISC_TARGET_BASE_URL": "base_url", "AISC_TARGET_API_KEY": "api_key",
+                                             "AISC_TARGET_MODEL": "model"}))
+class BiasPlugin(BaseEvaluationPlugin):
+    ...                                   # calls the card target through its endpoint
 
 
-@system_under_test(protocols=("openai",),
-                   env={"AISC_TARGET_BASE_URL": "base_url", "AISC_TARGET_API_KEY": "api_key",
-                        "AISC_TARGET_MODEL": "model"})
-class BiasPlugin(BaseEvaluationPlugin[BiasConfig]):
-    def evaluate(self, config_data):
-        target = OpenAI(base_url=os.environ["AISC_TARGET_BASE_URL"], api_key=os.environ["AISC_TARGET_API_KEY"])
-        judge = OpenAI(api_key=config_data["judge_api_key"])          # a tool model: its own fields
-        ...
+@assesses(local_model=onnx(input="model"))
+@evaluation_input(name="model", label="Model", input_provider_class=OnnxInputProvider,
+                  input_type=InputType.MODEL, required=True)
+class DriftPlugin(BaseEvaluationPlugin):
+    ...                                   # reads an uploaded model file
 ```
 
-A project admin registers the AI systems the project assesses over the network under **Manage,
-Connections** on the project page: an OpenAI-compatible endpoint, an A2A agent, an Open Inference
-Protocol (KServe V2) model server, or any REST API with a request template. There are two ways for a
-plugin to use one.
+**Declare exactly one.** A class carries one declaration: `@assesses`, or one of the older decorators
+(13.7), never two. A subclass inherits the declaration of its base and must not declare again; a second
+declaration on the subclass raises `ValueError` at import.
 
-### 13.1 A tool that already speaks a standard protocol
+### 13.2 What the evaluation form offers
+
+The engine reads the declaration (`target_kinds_of`, `card_protocols_of`, `card_needs_connection`) and
+builds the form from it, so a kind the plugin does not declare cannot be picked:
+
+| Declared | The form asks for | Cannot be picked |
+|---|---|---|
+| `card=` only | one required target: "What is assessed (AI card)" | a local model file |
+| `local_model=` only | the plugin's model input: "What is assessed (local model file)" | a card target (no `target` input is added) |
+| both | two optional inputs, the AI card target or a local model file; an evaluation with neither or both is refused | |
+| neither (a plugin that has not adopted) | a required `target`, as before | |
+
+A card target for a plugin whose card access calls the target (`system_under_test_access`,
+`dataset_through_target_access`, `model_session`) must have a connection; the form shows one without as
+"not connected" and the evaluation is refused. A plugin that declares both kinds is run on one of them:
+a run on a local model file is listed apart ("Local, not part of the assessment record"), is not in the
+AI card's results page or reports, and is labelled "Local" in the dashboards. There is no silent fallback
+from a card target to the plugin's own model.
+
+### 13.3 Scoring plugins: `model_session` and `assessed_model()`
+
+A plugin that scores rows with a model wants one object whichever target the run has.
+`self.assessed_model()` returns it: `predict(rows)` gives one label per row, `predict_proba(rows)` one
+list of class probabilities per row. `rows` is a list of dicts (feature name to value).
+
+```python
+@assesses(card=model_session(outputs={"label": "decision", "probability": "risk.p"}), local_model=onnx())
+@evaluation_input(name="model", label="Model", input_provider_class=OnnxInputProvider,
+                  input_type=InputType.MODEL)
+class ScoringPlugin(BaseEvaluationPlugin):
+    def evaluate(self, config_data):
+        model = self.assessed_model()
+        labels = model.predict(rows)
+        proba = model.predict_proba(rows)
+```
+
+- With a **local model file**, the session runs the uploaded ONNX model; labels are class indices
+  (0, 1, ...). Any number of classes works.
+- With a **card target**, the session sends each row once, in order, through the target's connection (the
+  row is the request's `{{input}}`) and reads the answer at the paths declared in `outputs`: `label`
+  and `probability` (of the positive class; `predict_proba` gives `[1-p, p]`). `predict` returns the
+  target's own label values. Declare `label`, `probability` or both. A target with several classes is
+  refused: **binary classification only on card targets**. An answer lacking a declared path, a
+  probability outside 0 to 1 and a refused row stop the run with the row number and the path.
+- A run that binds both a model file and a card target, or neither, raises `ValueError`.
+
+### 13.4 Helper models: `@helper_model` and `self.helper(role)`
+
+```python
+from aisc_plugin_interface import BaseEvaluationPlugin, assesses, helper_model, system_under_test_access
+
+
+@helper_model("judge", "Judge model", required=True)
+@helper_model("attacker", "Attacker model")
+@assesses(card=system_under_test_access(protocols=("openai",), env={"AISC_TARGET_BASE_URL": "base_url"}))
+class JailbreakPlugin(BaseEvaluationPlugin):
+    def evaluate(self, config_data):
+        judge = self.helper("judge")          # HelperModel(role, endpoint_url, model, api_key)
+        attacker = self.helper("attacker")    # None when the run binds none to this optional role
+```
+
+The roles are `judge`, `attacker`, `grader`, `embedder` and `generator` (`HELPER_ROLES`). Each role is
+an LLM input named `helper:<role>` that the form shows as "Helper model · <Role> (not assessed)": the
+person picks the endpoint, the model and the project secret that holds the key. Rules:
+
+1. **Never put a helper model's key, address or model in a config field.** `self.helper(role)` reads
+   them, the key from the project secret's environment variable (as `get_secret`); the repr of the result
+   never shows the key.
+2. **Never use the target's key or address for a helper model.** A judge for a card target is its own
+   model with its own key: the key of the target stays on the target (the `AISC_TARGET_*` variables of
+   13.5 are not what a judge client reads), and a helper's key is never sent to the target.
+3. A role that is declared required and bound to nothing, or a model bound without an endpoint or model
+   name, or whose secret the run does not provide, raises `ValueError` naming the role.
+4. Pass the helper's values to its client explicitly: no fallback to a shared environment variable such
+   as `OPENAI_API_KEY`.
+
+Config fields that select or key the model under test (`target_model`, `target_credential`,
+`target_endpoint`, `model_under_test`) have no place in a plugin that declares `card=`: the target comes
+from the platform. Remove them from the plugin's config when adopting `@assesses`.
+
+### 13.5 The rules for a card target
+
+1. **Never take the target from the form.** With a target bound, its address, key and model come from
+   the platform for the length of the run. Write them into the plugin's own target fields, or into
+   variables named for the target (`AISC_TARGET_BASE_URL`, `AISC_TARGET_API_KEY`, `AISC_TARGET_MODEL`),
+   never into variables a helper model also reads (`OPENAI_API_KEY`, `OPENAI_BASE_URL` and the like).
+2. **Say what the plugin needs from the endpoint beyond text**: `needs=("tools",)` or
+   `needs=("logprobs",)`. The platform's endpoint carries text and a history; a run whose endpoint
+   doesn't carry a need is refused before the tool starts, with the reason. A target without an
+   endpoint is refused the same way ("<target> has no endpoint: set one under Manage, Components and
+   connections").
+3. **The run records what it reached**: the library saves `connection-<name>.json` with the connection,
+   the target and the protocol (never the key), and the platform records which connection served the run.
+
+The names in the evaluation form say what each target is: "AI card · System: <label> · reached through
+<protocol>" for the system and "AI card · Component: <label> (<kind>) · not connected" for a component
+without a connection.
+
+A project admin registers the AI systems the project assesses over the network under **Manage,
+Components and connections** on the project page: an OpenAI-compatible endpoint, an A2A agent, an Open
+Inference Protocol (KServe V2) model server, or any REST API with a request template. There are two ways
+for a plugin to use one.
+
+#### A tool that already speaks a standard protocol
 
 Most tools call a system their own way: an OpenAI client, an A2A client, an OIP client. Declare which
 protocol(s) the tool speaks and where it takes the endpoint; the tool is then pointed at the platform,
 which translates to whatever the connection is:
 
 ```python
-from aisc_plugin_interface.system_under_test import system_under_test
-
-
-@system_under_test(protocols=("openai",),
-                   fields={"target.base_url": "base_url", "target.api_key": "api_key", "target.model": "model"})
-class MyPlugin(BaseEvaluationPlugin[MyConfig]):
+@assesses(card=system_under_test_access(
+    protocols=("openai",),
+    fields={"target.base_url": "base_url", "target.api_key": "api_key", "target.model": "model"}))
+class MyPlugin(BaseEvaluationPlugin):
     def evaluate(self, config_data):
         ...   # config_data["target"] points at the system under test
 ```
 
-This adds the `target` input: what the evaluation assesses, the system or one component of its AI
-card. When a run has a target with an endpoint, the platform issues the run a key for that endpoint
-(valid 12 hours, stored hashed), and the declared config fields (dotted for nesting) and environment
-variables (`env={"AISC_TARGET_BASE_URL": "base_url"}`, set for the length of `evaluate` only) are
-filled for the first protocol listed.
+This adds the `target` input: what the evaluation assesses. When a run has a target with an endpoint,
+the platform issues the run a key for that endpoint (valid 12 hours, stored hashed), and the declared
+config fields (dotted for nesting) and environment variables (`env={"AISC_TARGET_BASE_URL": "base_url"}`,
+set for the length of `evaluate` only) are filled for the first protocol listed.
 
 | Protocol | Roles |
 |---|---|
@@ -459,17 +541,13 @@ filled for the first protocol listed.
 | `a2a` | `agent_card_url`, `rpc_url`, `api_key` |
 | `oip` | `base_url`, `model`, `api_key` |
 
-Only fill what reaches the system under test (rule 2): a tool that also uses an LLM as a judge keeps
-that client on its own fields (rule 3). With `required=False` the tool runs unchanged when no endpoint
-is bound.
+Only fill what reaches the target (rule 1): a tool that also uses an LLM as a judge keeps that client on
+its helper model (13.4). A plugin whose card access is optional (`required=False` in the older
+decorators, or `local_model=` declared next to `card=`) runs unchanged when no endpoint is bound. A plugin
+reads the target with `aisc_plugin_interface.targets.target_of(self)`; `EndpointClient.for_target(self)`
+reaches its endpoint.
 
-Every evaluation in the Configurator names its target, whether or not the tool calls a system: the
-engine adds a required `target` input to every plugin's form, and results are joined to it. A plugin
-that declares the input (the decorator does) reads it with
-`aisc_plugin_interface.targets.target_of(self)`; `EndpointClient.for_target(self)` reaches that
-target's endpoint.
-
-### 13.2 A tool written for AISC
+#### A tool written for AISC
 
 Declare a resource input and ask the client:
 
@@ -479,7 +557,7 @@ from aisc_plugin_interface.connections import EndpointClient
 
 
 @evaluation_input(name="system", label="System under test", input_type=InputType.RESOURCE, required=True)
-class MyPlugin(BaseEvaluationPlugin[MyConfig]):
+class MyPlugin(BaseEvaluationPlugin):
     def evaluate(self, config_data):
         system = EndpointClient.for_input(self, "system")
         answer = system.ask("Is my nationality an input?", history=[...])   # history is optional
@@ -498,12 +576,42 @@ An A2A answer of the wrong shape (a task, status, message or artifact that is no
 that are not a list, a reply that is not JSON) is an `EndpointBadResponse`, never a crash of the plugin.
 A connection with a key header sends the key in that header whatever its kind, A2A and OIP included;
 without one, A2A and OIP send it as `Authorization: Bearer`.
-Internal addresses are refused unless the project allows them (Manage, Connections, Allowed internal
-hosts, or the deployment's `CONNECTIONS_ALLOWED_HOSTS`); the platform hands the run that rule with the
-connection, so the plugin needs no setting of its own. The rule is applied to the address the
-connection actually reaches, after any second name lookup, and an IPv4-mapped address counts as the
+Internal addresses are refused unless the project allows them (Manage, Components and connections,
+Allowed internal hosts, or the deployment's `CONNECTIONS_ALLOWED_HOSTS`); the platform hands the run that
+rule with the connection, so the plugin needs no setting of its own. The rule is applied to the address
+the connection actually reaches, after any second name lookup, and an IPv4-mapped address counts as the
 IPv4 address it carries. Only a socket to a configured proxy's own host skips that check (the proxy
 resolves the name); a proxy variable being set, or `NO_PROXY` alone, does not switch it off.
+
+### 13.6 Tables sent through the target
+
+`dataset_through_target_access(datasets=("reference-dataset", ...))` is for a plugin that analyses
+tables: each row is first sent through the target's endpoint, and its answer becomes columns
+`target.<field>` (a refusal `target.refused` and `target.refusal_reason`, a failed call `target.error`; a
+field of the system's own answer named `refused`, `refusal_reason`, `error` or `answer` goes under
+`target.answer.<field>`, so it is never taken for the wrapper's flag). Dates and times are sent as ISO
+text (a missing one as null) and decimals as numbers. The plugin reads the enriched table in the form it
+had it (a DataFrame stays a DataFrame, rows stay rows, whatever its input's provider); the answers are
+saved as `target-answers-<dataset>.csv`, where a text cell or column name starting with `=`, `+`, `-`,
+`@`, a tab or a carriage return gets a leading `'` so a spreadsheet does not run it as a formula
+(numbers are written as they are). The run settings `target_calls_at_once` (default 1, at most 16) and
+`target_row_limit` (0: every row) are read from the plugin's config when its form has them. Which fields
+of a row are sent is the endpoint's business: its body template (`{{input}}` sends the whole row). A
+connection bound directly (`connection:<pid>/<name>`) works as well as a target. With a target the
+platform says has no endpoint (training data, say) and `required=False` in the older decorator, the
+plugin runs on the uploads as they are; any other failure to resolve it (no such target or project, a
+platform that does not answer) still stops the run, and so does a target whose every call failed (one
+failed row is only that row's `target.error`).
+
+### 13.7 Plugins that have not adopted `@assesses`
+
+`@system_under_test(...)`, `@dataset_through_target(...)` and `@assesses_inputs()` keep working
+unchanged, alone: they read as `card=` with no local model, and the form adds a required `target` as
+before. Use them with the same arguments (`required=`, `needs=`, `fields=`, `env=`). A plugin with none
+of them and no `@assesses` has no target kinds; the platform's plugin check reports it. Reading the
+declaration: `target_kinds_of(cls)` (`("card",)`, `("local_model",)`, both, or `()`),
+`card_protocols_of(cls)`, `card_needs_connection(cls)`, `helper_roles_of(cls)`; `target_access_of(cls)`
+still reads the older declaration.
 
 ## License
 

@@ -1,7 +1,7 @@
 """Declare the models a plugin uses as tools: a judge, an attacker, a grader, an embedder or a generator.
 
     @helper_model("judge", "Judge model", required=True)
-    @assesses(card=system_under_test_access(protocols=("openai",)))
+    @assesses(card=system_under_test_access(protocols=("openai",), env={"AISC_TARGET_BASE_URL": "base_url"}))
     class JailbreakPlugin(BaseEvaluationPlugin):
         def evaluate(self, config_data):
             judge = self.helper("judge")  # HelperModel(role, endpoint_url, model, api_key)

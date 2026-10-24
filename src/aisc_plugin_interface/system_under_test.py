@@ -279,7 +279,7 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
                 if not required:
                     return original(self, config_data)
                 raise ValueError("no target: this plugin sends its datasets through the evaluation's target,"
-                                 " which needs an endpoint (Manage, Targets and endpoints)")
+                                 " which needs an endpoint (Manage, Components and connections)")
             try:
                 # a target's endpoint, or a connection bound directly (connection:<pid>/<name>)
                 client = (EndpointClient.for_target(self, input_name) if is_target(value)

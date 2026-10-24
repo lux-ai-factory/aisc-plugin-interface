@@ -6,7 +6,7 @@ objectives, 3 Choose tests and checklists, 4 Collect evidence. The tests of step
 is a Python package with one or more classes that inherit from `BaseEvaluationPlugin`, defined here.
 The library also holds the models those classes exchange with the execution engine (inputs,
 measures, progress, project settings) and the client a plugin uses to call the system under test
-that a project registered under Manage, Connections.
+that a project registered under Manage, Components and connections.
 
 It is a library, not a service: nothing here listens on a port.
 
@@ -40,8 +40,11 @@ Main parts of `src/aisc_plugin_interface/`:
 | `decorators/` | `@metric`, `@evaluation_input`, `@project_config` |
 | `models/` | `Measure`, `MetricVisualization`, `TaskProgress`, `InputDefinition`, `DataShape`, `LLMConfig`, `ResourceConfig`, ... |
 | `input_providers/` | readers that turn input bytes into Python objects: CSV, JSON, Parquet (needs pandas), ONNX (needs onnxruntime) |
-| `connections.py` | `EndpointClient`: call a system registered under Manage, Connections (OpenAI-compatible, REST, A2A, Open Inference Protocol) |
+| `connections.py` | `EndpointClient`: call a system registered under Manage, Components and connections (OpenAI-compatible, REST, A2A, Open Inference Protocol) |
 | `system_under_test.py` | how a plugin gets what it assesses: `@system_under_test` (a target through its Manage endpoint, with `needs=`), `@assesses_inputs`, or `@dataset_through_target` (each row of a table through the target first); the rules are in PLUGIN_DEVELOPER_GUIDE.md section 13 |
+| `assesses.py` | `@assesses(card=..., local_model=...)`: what a plugin assesses (an AI card target, a local ONNX model file, or both), with the card builders `system_under_test_access`, `dataset_through_target_access`, `inputs_access`, `model_session`, and `onnx`; `target_kinds_of` reads it |
+| `helpers.py` | `@helper_model(role, label)`: the judge, attacker, grader, embedder or generator a plugin uses as a tool; `self.helper(role)` returns a `HelperModel` |
+| `model_session.py` | `self.assessed_model()`: one `predict` / `predict_proba` over a local ONNX file or an AI card target's connection |
 | `targets.py` | the evaluation's `target` input (`target:<project pid>/<key>`): the AI system or one component of its AI card |
 | `model_listing.py` | `list_openai_models`: list the models of an OpenAI-compatible endpoint |
 | `cli.py`, `templates/` | the `aisc-plugin-interface init-plugin` command |

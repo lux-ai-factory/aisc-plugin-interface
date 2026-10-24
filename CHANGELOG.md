@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-24: 0.2.9, what a plugin assesses and its helper models
+
+New
+- `@assesses(card=..., local_model=...)` states what a plugin assesses: a target of the AI card (`system_under_test_access`, `dataset_through_target_access`, `inputs_access` or `model_session`, each applying the matching older decorator or adapter) and/or a local ONNX model file (`onnx(input="model")`). The engine reads it with `target_kinds_of`, `card_protocols_of` and `card_needs_connection` to build the evaluation form. Exactly one declaration per class; a subclass inherits it and may not restate it. Tests: `tests/test_assesses.py`, `tests/test_target_declarations.py`.
+- `@helper_model(role, label, required=False)` declares a judge, attacker, grader, embedder or generator as the LLM input `helper:<role>`; `self.helper(role)` returns a `HelperModel` with the key read from the project secret, never from a config field. `helper_roles_of(cls)` and `HELPER_ROLES` are exported. Test: `tests/test_helper_model.py`.
+- `model_session(outputs={"label": ..., "probability": ...})` and `self.assessed_model()`: one `predict` / `predict_proba` object over the plugin's local ONNX file or, for a card target, the target's connection (each row sent once; binary classification only on card targets). Test: `tests/test_model_session.py`.
+- PLUGIN_DEVELOPER_GUIDE.md section 13 is rewritten around these.
+
+Unchanged
+- `@system_under_test`, `@dataset_through_target` and `@assesses_inputs` used alone behave as before and read as a card declaration with no local model.
+
+Fixes
+- The text of a target without an endpoint and the guide name the page "Manage, Components and connections", and the engine's target names are "AI card · System: ... · reached through ..." / "AI card · Component: ... (...) · not connected".
+
+Check: `uv run --with pytest --with pandas --with onnx --with onnxruntime python -m pytest -q`.
+
 ## 2026-10-19: 0.2.8, run pass
 
 Security
