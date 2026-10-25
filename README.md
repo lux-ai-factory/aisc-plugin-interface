@@ -62,16 +62,15 @@ From PyPI (the released version, built from the `master` branch):
 uv add aisc-plugin-interface        # or: pip install aisc-plugin-interface
 ```
 
-PyPI's latest release is 0.3.0. It does not contain `connections.py`, `system_under_test.py` or
-`targets.py`, which exist only on the `feat/unified-modules` branch that the AISC stack uses. A plugin
-that needs them installs from git:
+This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
+`system_under_test`, `targets`, `assesses`, `helpers` or `model_session`, which exist only on the
+`feat/unified-modules` branch that the AISC stack uses. A plugin that needs them pins
+`aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi) or from git,
+never from PyPI until 0.4.0 is released there:
 
 ```bash
 uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch feat/unified-modules
 ```
-
-This branch's `pyproject.toml` reads 0.2.8, below PyPI's 0.3.0, so a version constraint such as
-`>=0.3.0` is not met by a git install of this branch; constrain on the git source instead.
 
 A plugin's evaluation run installs the plugin and its dependencies into a fresh environment, from
 PyPI and the stack's package index (devpi). `plugin-publisher` publishes this library to that index
@@ -95,7 +94,7 @@ Create a project and add the library:
 
 ```bash
 mkdir my-aisc-plugin && cd my-aisc-plugin
-uv init --lib
+uv init --lib --python 3.12
 uv add aisc-plugin-interface
 uv run aisc-plugin-interface init-plugin     # writes a plugin class template into src/<package>/
 ```

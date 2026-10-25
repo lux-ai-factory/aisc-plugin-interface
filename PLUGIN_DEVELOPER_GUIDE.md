@@ -70,7 +70,7 @@ version with the local label `+local`, so it never shadows a version of the same
 
 ```bash
 mkdir my-aisc-plugin && cd my-aisc-plugin
-uv init --lib
+uv init --lib --python 3.12
 uv add aisc-plugin-interface
 uv run aisc-plugin-interface init-plugin
 ```
@@ -78,8 +78,10 @@ uv run aisc-plugin-interface init-plugin
 `init-plugin` asks for a class name and a file path, writes a plugin template into
 `src/<package>/` and adds the class to `__init__.py`. `--force` overwrites an existing file.
 
-PyPI's `aisc-plugin-interface` 0.3.0 has no connection client (section 13). A plugin that calls a
-system under test installs the `feat/unified-modules` branch instead:
+This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
+`system_under_test`, `targets`, `assesses`, `helpers` or `model_session` (section 13). A plugin that
+needs them pins `aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi)
+or from git (`--branch feat/unified-modules`), never from PyPI until 0.4.0 is released there:
 
 ```bash
 uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch feat/unified-modules
@@ -244,6 +246,8 @@ class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
         return [Measure(name="accuracy", score=float(score), dimensions={"split": split})
                 for split, score in evaluation_output.get("accuracy_by_split", {}).items()]
 ```
+
+Rules for dimensions: every per-slice `Measure` shares the same `name`; each `dimensions` value must be a scalar; use config-declared keys (e.g. the split names from the dataset) so the host can filter and group by them.
 
 `get_metric_visualizations(config_data)` says how the results page shows the metrics. By default it
 is one table with every metric; override it to add charts. Metric names must match the `@metric`

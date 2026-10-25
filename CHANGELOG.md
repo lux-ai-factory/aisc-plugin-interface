@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-25: 0.4.0, upstream 0.3.0 merged; the target's key stays on the platform
+
+Changed
+- Merged upstream 0.3.0 (its README and guide changes, `pydantic>=2.13.5`, `rich>=15.0.0`). This release is 0.4.0 so that a `>=0.4.0` constraint never resolves PyPI's 0.3.0, which lacks this branch's modules (`connections`, `system_under_test`, `targets`, `assesses`, `helpers`, `model_session`). Test: `tests/test_version.py`.
+
+Unchanged
+- `@system_under_test`, `@dataset_through_target`, `@assesses_inputs`.
+
+Check: `uv run --with pytest --with pandas --with onnx --with onnxruntime --with "pydantic>=2.13.5" --with "rich>=15.0.0" python -m pytest -q`.
+
 ## 2026-10-24: 0.2.9, what a plugin assesses and its helper models
 
 New
