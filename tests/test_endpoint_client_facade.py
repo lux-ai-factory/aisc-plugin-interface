@@ -369,3 +369,60 @@ def test_tools_are_refused_before_the_call_when_the_endpoint_does_not_carry_them
     client().ask("q", tools=TOOLS)
     (req,) = asks(facade)
     assert json.loads(req["body"])["params"] == {"tools": TOOLS}
+
+
+# hardening: the key leaves no trace, the ask URL carries no userinfo, the run key answer is JSON
+
+def frame_locals(exc):
+    """The repr of every local of every library frame the exception (and the ones it chains) keeps."""
+    seen, out = set(), []
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        tb = exc.__traceback__
+        while tb is not None:
+            frame = tb.tb_frame
+            if "aisc_plugin_interface" in frame.f_code.co_filename:
+                for name, value in frame.f_locals.items():
+                    try:
+                        out.append(f"{name}={value!r}")
+                    except Exception:
+                        pass
+            tb = tb.tb_next
+        exc = exc.__cause__ or exc.__context__
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize("failure", ["run key refused", "ask url off the platform", "no endpoint",
+                                     "run key answer without a key"])
+def test_a_secret_the_platform_still_returns_is_in_no_frame_of_a_run_key_failure(facade, failure):
+    facade.route(RESOLVE, (200, resolved(facade, secret="s3cr3t")))
+    facade.route(RUN_KEYS, {
+        "run key refused": (403, {"detail": "not in this run's pass"}),
+        "ask url off the platform": (201, issued(facade, ask_url=f"http://evil.example:{facade.port}{ASK_PATH}")),
+        "no endpoint": (404, {"detail": "Scoring engine has no endpoint", "reason": "no_endpoint"}),
+        "run key answer without a key": (201, issued(facade, key="")),
+    }[failure])
+    with pytest.raises(EndpointError) as raised:
+        client()
+    assert "s3cr3t" not in frame_locals(raised.value)
+
+
+@pytest.mark.parametrize("ask_url", [
+    "http://evil.example@{host}" + ASK_PATH,
+    "http://evil.example\\@{host}" + ASK_PATH,
+    "http://user:pw@{host}" + ASK_PATH,
+    "http://user@{host}" + ASK_PATH,
+])
+def test_an_ask_url_with_userinfo_is_refused(facade, ask_url):
+    facade.route(RUN_KEYS, (201, issued(facade, ask_url=ask_url.format(host=facade.host))))
+    with pytest.raises(EndpointError, match="is not on PLATFORM_URL"):
+        client()
+    assert [r["path"] for r in facade.seen] == [RESOLVE, RUN_KEYS]
+
+
+@pytest.mark.parametrize("body", [b"not json", b"<html>gateway</html>", b""])
+def test_a_run_key_answer_that_is_not_json_is_an_endpoint_error(facade, body):
+    facade.route(RUN_KEYS, (201, body))
+    with pytest.raises(EndpointError, match="the platform's run-key answer was not JSON"):
+        client()
+    assert asks(facade) == []

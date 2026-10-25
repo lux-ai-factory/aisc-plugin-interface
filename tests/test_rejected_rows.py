@@ -10,7 +10,7 @@ import pytest
 
 from aisc_plugin_interface import assesses, model_session
 from aisc_plugin_interface.connections import (
-    Descriptor, EndpointAuthError, EndpointBadResponse, EndpointClient, EndpointNotFound,
+    Descriptor, EndpointAuthError, EndpointBadResponse, EndpointClient, EndpointError, EndpointNotFound,
 )
 from aisc_plugin_interface.model_session import EndpointSession, ModelOutputMissing, OnnxSession
 from aisc_plugin_interface.system_under_test import SYSTEM_INPUT
@@ -208,3 +208,44 @@ def test_a_local_session_rejects_nothing():
 
 def test_the_artifact_name_is_exported():
     assert sessions.REJECTED_ROWS_ARTIFACT == ARTIFACT
+
+
+# a target that times a request out or rate-limits is failing, not rejecting a row
+
+from test_endpoint_client_facade import ASK_PATH, OK as ASKED, client, facade  # noqa: E402,F401 (facade: fixture)
+
+
+def direct_session(stub, strict=False):
+    client = EndpointClient(Descriptor.from_dict(dict(SCORER, base_url=stub.base)), allowed_hosts=[stub.host],
+                            sleep=lambda s: None)
+    return EndpointSession(client, OUTPUTS, strict=strict)
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["non-strict", "strict"])
+@pytest.mark.parametrize("status", [408, 429])
+def test_408_and_429_stop_the_run(stub, status, strict):
+    stub.route("/score", OK, (status, {"detail": "slow down"}))
+    session = direct_session(stub, strict=strict)
+    with pytest.raises(EndpointError, match="row 2") as raised:
+        session.predict_proba(ROWS)
+    assert not isinstance(raised.value, (sessions.AllRowsRejected, ModelOutputMissing))
+    assert session.rejected == []
+
+
+@pytest.mark.parametrize("status", [408, 429])
+def test_408_and_429_through_the_platform_stop_a_non_strict_run(facade, status):
+    facade.route(ASK_PATH, (200, ASKED), (502, {"error": "bad_response", "status": status,
+                                                    "detail": f"MCAS scorer: the system answered {status}"}))
+    session = EndpointSession(client(), {"probability": "risk.p"}, strict=False)
+    with pytest.raises(EndpointError, match="row 2") as raised:
+        session.predict_proba(ROWS)
+    assert not isinstance(raised.value, sessions.AllRowsRejected)
+    assert session.rejected == []
+
+
+@pytest.mark.parametrize("status", [400, 409, 413, 422])
+def test_another_4xx_is_still_a_rejected_row(stub, status):
+    stub.route("/score", OK, (status, {"detail": "not this row"}), OK)
+    session = direct_session(stub)
+    assert session.predict_proba(ROWS)[1] is None
+    assert [index for index, _ in session.rejected] == [1]

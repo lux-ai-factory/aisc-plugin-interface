@@ -508,3 +508,25 @@ def test_a_model_session_under_a_pass_goes_through_the_platform(stub, monkeypatc
     assert model.predict_proba(ROWS) == [pytest.approx(p) for p in ([0.5, 0.5], [0.2, 0.8], [0.98, 0.02])]
     assert len([r for r in stub.seen if r["path"] == ASK_PATH]) == 3
     assert calls(stub) == []
+
+
+HUGE = b'{"prediction": 1' + b"0" * 400 + b"}"                           # an integer too large for a float
+NOT_FINITE = [HUGE, b'{"prediction": "high"}', b'{"prediction": NaN}', b'{"prediction": Infinity}',
+              b'{"prediction": -Infinity}']
+
+
+@pytest.mark.parametrize("said", NOT_FINITE, ids=["huge integer", "string", "nan", "infinity", "minus infinity"])
+def test_a_value_that_is_no_finite_float_is_a_rejected_row_in_a_non_strict_session(system, said):
+    system.route("/score", (200, {"prediction": 1}), (200, said), (200, {"prediction": 2}))
+    model = bound(value_scorer(strict=False), target=True).assessed_model()
+    assert model.predict_value(ROWS) == [1.0, None, 2.0]
+    ((index, reason),) = model.rejected
+    assert index == 1 and reason.startswith("the value at 'prediction' is not a number")
+
+
+@pytest.mark.parametrize("said", NOT_FINITE, ids=["huge integer", "string", "nan", "infinity", "minus infinity"])
+def test_a_value_that_is_no_finite_float_fails_a_strict_session_naming_the_row(system, said):
+    system.route("/score", (200, {"prediction": 1}), (200, said))
+    model = bound(value_scorer(strict=True), target=True).assessed_model()
+    with pytest.raises(ModelOutputMissing, match=r"row 2: the value at 'prediction' is not a number"):
+        model.predict_value(ROWS)
