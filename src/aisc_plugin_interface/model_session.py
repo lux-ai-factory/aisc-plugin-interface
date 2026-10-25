@@ -26,10 +26,11 @@ Both sessions take ``rows`` as a list of dicts (feature name -> value) and retur
   (``value``): ``outputs["classes"]`` above 2 makes ``assessed_model()`` refuse a card target. Without a
   probability path ``predict_proba`` raises; with only a probability path ``predict`` returns 0 or 1,
   the more probable class.
-- Rows the target rejects (a refusal, a 4xx answer, an answer without a declared output or with one the
+- Rows the target rejects (a refusal, a 4xx answer other than 408 or 429, an answer without a declared output or with one the
   session cannot read): a strict session (the default, ``model_session(outputs, strict=True)``) stops on
   the first; ``strict=False`` gives None at that row, lists it in ``session.rejected`` and saves
-  ``rejected-rows.json`` with the run. A failure of the target itself stops the run either way, and so
+  ``rejected-rows.json`` with the run. A failure of the target itself (including a 408 or 429 answer)
+  stops the run either way, and so
   does a call whose every row was rejected (``AllRowsRejected``).
 - A local regressor: ``OnnxSession.predict_value`` reads the model's first output, one number per row;
   a model with a probability output is a classifier and is refused.
@@ -104,12 +105,12 @@ class EndpointSession:
     """A card target's model, reached through its connection (see the module docstring). The session
     keeps the answers it got: a row (the same values) is sent once, however often it is scored.
 
-    ``strict`` (the default) stops on the first row the target rejects: a refusal, a 4xx answer, an
-    answer without a declared output or with one the session cannot read. Not strict, such a row is
-    ``None`` in the result and is listed in ``rejected`` as (index in that call's rows, reason), and the
-    rejections are saved with the run as ``rejected-rows.json``. A failure of the target itself (its
-    key refused, not found, a timeout, a blocked address, a 5xx answer) stops the run either way, and so
-    does a call whose every row was rejected (``AllRowsRejected``)."""
+    ``strict`` (the default) stops on the first row the target rejects: a refusal, a 4xx answer other
+    than 408 or 429, an answer without a declared output or with one the session cannot read. Not
+    strict, such a row is ``None`` in the result and is listed in ``rejected`` as (index in that call's
+    rows, reason), and the rejections are saved with the run as ``rejected-rows.json``. A failure of the
+    target itself (its key refused, not found, a timeout, a blocked address, a 408, 429 or 5xx answer)
+    stops the run either way, and so does a call whose every row was rejected (``AllRowsRejected``)."""
 
     def __init__(self, client, outputs: dict, strict: bool = True, plugin=None):
         self.client = client
@@ -214,7 +215,8 @@ class EndpointSession:
                 self._answered[key] = self.client.ask(sent)
             except EndpointBadResponse as exc:
                 error = type(exc)(f"row {n}: {exc}", status=exc.status)
-                if exc.status is not None and 400 <= exc.status < 500:
+                # 408 (timed out) and 429 (rate limited) are the target failing, not rejecting the row
+                if exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429):
                     raise _Rejected(error, str(exc)) from None
                 raise error from None
             except EndpointError as exc:

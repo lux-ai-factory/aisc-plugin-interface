@@ -474,7 +474,7 @@ class ScoringPlugin(BaseEvaluationPlugin):
   `ValueError`): `predict_value` and `predict` give the number at that path as a float, which must be a
   finite number (not a boolean); `predict_proba` raises.
 - **Rows the target rejects.** A row is rejected when the target refuses it, answers it with a 4xx
-  status, or answers without a declared path or with a value the session cannot read (a probability
+  status other than 408 or 429 (those two, a timeout and a rate limit, are the target failing), or answers without a declared path or with a value the session cannot read (a probability
   outside 0 to 1, a value that is not a finite number, an empty label). By default the session is strict,
   `model_session(outputs={...}, strict=True)`: the first rejected row stops the run with the row number
   and the path. Declared `strict=False`, the session skips and counts them: a rejected row is `None` in
@@ -483,8 +483,8 @@ class ScoringPlugin(BaseEvaluationPlugin):
   characters), the row is sent once however often it is scored, and the run saves `rejected-rows.json`
   (`{"rows_sent", "rows_rejected", "rejected": [{"index", "reason"}]}`). A plugin that sets
   `strict=False` drops the `None` rows (and their labels) before computing a metric. Either way a failure
-  of the target itself (its key refused, not found, a timeout, a blocked address, a 5xx answer) stops the
-  run, and so does a call whose every row was rejected (`AllRowsRejected`, an `EndpointBadResponse`). A
+  of the target itself (its key refused, not found, a timeout, a blocked address, a 408, 429 or 5xx
+  answer) stops the run, and so does a call whose every row was rejected (`AllRowsRejected`, an `EndpointBadResponse`). A
   local model never rejects a row (`rejected` is always empty); its errors raise.
 - A run that binds both a model file and a card target, or neither, raises `ValueError`.
 - When the answer fields differ per system, give the paths per run: `assessed_model(outputs={...})`
