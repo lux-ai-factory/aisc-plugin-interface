@@ -888,6 +888,10 @@ class EndpointClient:
         try:
             with _OPENER.open(req, timeout=30) as resp:
                 data = json.loads(resp.read())
+            if os.environ.get("PLATFORM_RUN_PASS") and isinstance(data, dict):
+                # under a run pass the key stays on the platform: a secret it still returns is dropped at
+                # once, so no local, exception or traceback frame holds it afterwards
+                data.pop("secret", None)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:                    # no such connection, or a target without an endpoint
                 try:
@@ -908,7 +912,7 @@ class EndpointClient:
             return cls(Descriptor.from_dict(data), plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,
                        **kwargs)
         # under a run pass the key stays on the platform: the client asks it with a run key
-        descriptor = Descriptor.from_dict({k: v for k, v in data.items() if k != "secret"})
+        descriptor = Descriptor.from_dict(data)
         try:
             issued = _issue_run_key(pid, run_key_path, descriptor.name)
         except NoEndpoint as exc:
