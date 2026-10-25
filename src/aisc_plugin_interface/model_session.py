@@ -158,10 +158,11 @@ class EndpointSession:
 
         def value(answer, n):
             v = self._output(answer, n, "value")
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            number = _finite(v)
+            if number is None:
                 said = _scrub(str(v), self._secret)[:100]
                 raise ModelOutputMissing(f"row {n}: the value at {self.outputs['value']!r} is not a number: {said!r}")
-            return float(v)
+            return number
 
         return self._score(rows, value)
 
@@ -244,6 +245,18 @@ class EndpointSession:
         except KeyError:
             raise ModelOutputMissing(f"row {n}: the target's answer has no {path!r} (the declared {name}"
                                      " output)") from None
+
+
+def _finite(v: Any) -> float | None:
+    """``v`` as a finite float, or None: a bool, a string, NaN, an infinity or an integer too large for a
+    float is not one."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        number = float(v)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _named(exc: Exception, n: int) -> Exception:
