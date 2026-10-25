@@ -841,10 +841,13 @@ def _run_key_from(answer: Any, name: str) -> RunKey:
     ask_url = aisc.get("ask_url")
     if not isinstance(ask_url, str) or not ask_url:
         raise EndpointError(f"the platform's run key answer for {name!r} has no aisc ask_url")
+    # only plain printable ASCII: no lookalike, whitespace or control character the check and the request
+    # could read differently
+    plain = all("!" <= c <= "~" for c in ask_url)
     try:
         netloc = urllib.parse.urlsplit(ask_url).netloc
         # a userinfo part (or a backslash some parsers read as a path) can make another host the real one
-        on_platform = ("@" not in netloc and "\\" not in netloc
+        on_platform = (plain and "@" not in netloc and "\\" not in netloc
                        and _origin(ask_url) == _origin(os.environ.get("PLATFORM_URL") or ""))
     except ValueError:  # a URL the parser cannot read (a lookalike at sign, an unclosed bracket) is not trusted
         on_platform = False
