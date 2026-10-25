@@ -420,6 +420,18 @@ def test_an_ask_url_with_userinfo_is_refused(facade, ask_url):
     assert [r["path"] for r in facade.seen] == [RESOLVE, RUN_KEYS]
 
 
+@pytest.mark.parametrize("ask_url", [
+    "http://evil.example＠{host}" + ASK_PATH,
+    "http://evil.example﹫{host}" + ASK_PATH,
+    "http://[127.0.0.1:{port}" + ASK_PATH,
+], ids=["fullwidth at sign", "small at sign", "unclosed ipv6 bracket"])
+def test_an_ask_url_the_parser_cannot_read_is_refused_like_another_host(facade, ask_url):
+    facade.route(RUN_KEYS, (201, issued(facade, ask_url=ask_url.format(host=facade.host, port=facade.port))))
+    with pytest.raises(EndpointError, match="is not on PLATFORM_URL"):
+        client()
+    assert [r["path"] for r in facade.seen] == [RESOLVE, RUN_KEYS]
+
+
 @pytest.mark.parametrize("body", [b"not json", b"<html>gateway</html>", b""])
 def test_a_run_key_answer_that_is_not_json_is_an_endpoint_error(facade, body):
     facade.route(RUN_KEYS, (201, body))
