@@ -4,6 +4,8 @@ retries. The answer and the errors are the ones a direct call gives. Without a p
 descriptor, or the service token of older setups) the client calls the system directly, as before."""
 import hashlib
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -430,6 +432,48 @@ def test_an_ask_url_the_parser_cannot_read_is_refused_like_another_host(facade, 
     with pytest.raises(EndpointError, match="is not on PLATFORM_URL"):
         client()
     assert [r["path"] for r in facade.seen] == [RESOLVE, RUN_KEYS]
+
+
+PLATFORM_NAME_WITH_K = "kelvin.test"
+
+
+@pytest.fixture
+def platform_name_with_k(facade, monkeypatch):
+    """PLATFORM_URL names the platform by a host with a k, which resolves only to the stub."""
+    real = c.socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        return real("127.0.0.1" if host == PLATFORM_NAME_WITH_K else host, *args, **kwargs)
+
+    monkeypatch.setattr(c.socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setenv("PLATFORM_URL", f"http://{PLATFORM_NAME_WITH_K}:{facade.port}")
+    return facade
+
+
+@pytest.mark.parametrize("ask_url", [
+    "http://{host}" + ASK_PATH + "\uff20caf\u00e9",
+    "http://\u212aelvin.test:{port}" + ASK_PATH,
+    "http://{host}\r" + ASK_PATH,
+    "http://{host}" + ASK_PATH.replace("mcas-score", "mcas score"),
+    "http://{host}" + ASK_PATH.replace("mcas-score", "mcas\tscore"),
+], ids=["non-ascii in the path", "kelvin sign host", "carriage return after the port", "space in the path",
+        "tab in the path"])
+def test_an_ask_url_that_is_not_plain_ascii_is_refused_like_another_host(platform_name_with_k, ask_url):
+    facade = platform_name_with_k
+    url = ask_url.format(host=f"{PLATFORM_NAME_WITH_K}:{facade.port}", port=facade.port)
+    facade.route(RUN_KEYS, (201, issued(facade, ask_url=url)))
+    with pytest.raises(EndpointError, match="is not on PLATFORM_URL"):
+        client()
+    assert [r["path"] for r in facade.seen] == [RESOLVE, RUN_KEYS]
+
+
+def test_the_changelog_security_entry_says_ask_urls_not_plain_ascii_are_refused():
+    changelog = (Path(__file__).parents[1] / "CHANGELOG.md").read_text(encoding="utf-8")
+    release = changelog.split("\n## ")[1]
+    assert release.startswith("2026-10-25: 0.4.0")
+    security = release.split("\nSecurity\n", 1)[1].split("\n\n", 1)[0]
+    assert re.search(r"not plain (printable )?ASCII", security), security
+    assert "cannot read" in security, security
 
 
 @pytest.mark.parametrize("body", [b"not json", b"<html>gateway</html>", b""])
