@@ -445,7 +445,8 @@ from a card target to the plugin's own model.
 
 A plugin that scores rows with a model wants one object whichever target the run has.
 `self.assessed_model()` returns it: `predict(rows)` gives one label per row, `predict_proba(rows)` one
-list of class probabilities per row. `rows` is a list of dicts (feature name to value).
+list of class probabilities per row, and `predict_value(rows)` one number per row for a regressor.
+`rows` is a list of dicts (feature name to value).
 
 ```python
 @assesses(card=model_session(outputs={"label": "decision", "probability": "risk.p"}), local_model=onnx())
@@ -460,13 +461,18 @@ class ScoringPlugin(BaseEvaluationPlugin):
 
 - With a **local model file**, the session runs the uploaded ONNX model; labels are class indices
   (0, 1, ...) when the ONNX model has a probability output. Any number of classes works.
+  `predict_value` reads a regressor's first output (shape `(n,)` or `(n, 1)`) as one float per row; a
+  model with a probability output is a classifier and `predict_value` refuses it.
 - With a **card target**, the session sends each row once, in order, through the target's connection (the
   row is the request's `{{input}}`) and reads the answer at the paths declared in `outputs`: `label`
   and `probability` (of the positive class; `predict_proba` gives `[1-p, p]`). `predict` returns the
   target's own label values. Declare `label`, `probability` or both. `predict_proba` on a card session
   without a probability path raises; `predict` with only a probability path returns 0 or 1, the more
   probable class. Declaring `outputs["classes"]` above 2 makes `assessed_model()` refuse a card target:
-  **binary classification only on card targets**. An answer lacking a declared path, a
+  **binary classification, or one number per row (`value`), on card targets**. A regressor declares
+  `outputs={"value": "prediction"}`, alone (with `label`, `probability` or `classes` it raises
+  `ValueError`): `predict_value` and `predict` give the number at that path as a float, which must be a
+  finite number (not a boolean); `predict_proba` raises. An answer lacking a declared path, a
   probability outside 0 to 1 and a refused row stop the run with the row number and the path.
 - A run that binds both a model file and a card target, or neither, raises `ValueError`.
 - When the answer fields differ per system, give the paths per run: `assessed_model(outputs={...})`

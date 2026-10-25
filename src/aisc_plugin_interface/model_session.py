@@ -8,7 +8,8 @@
             labels, proba = model.predict(rows), model.predict_proba(rows)
 
 Both sessions take ``rows`` as a list of dicts (feature name -> value) and return plain Python lists:
-``predict`` one label per row, ``predict_proba`` one list of class probabilities per row.
+``predict`` one label per row, ``predict_proba`` one list of class probabilities per row, and
+``predict_value`` one number per row for a regressor (the ``value`` output).
 
 - A local model file: ``OnnxSession`` over the ONNX the project uploaded (its bytes, or the
   ``onnxruntime.InferenceSession`` an ONNX input provider made of them). It reads its outputs the way the
@@ -20,19 +21,24 @@ Both sessions take ``rows`` as a list of dicts (feature name -> value) and retur
 - An AI card target: ``EndpointSession`` sends each row once, in order, through the target's
   connection (the row as the request's ``{{input}}``) and reads the declared ``outputs`` paths in the
   answer: ``label`` (when not declared: the more probable class, 0 or 1) and ``probability`` (of the
-  positive class; ``predict_proba`` gives ``[1-p, p]``). Binary classification only: ``outputs["classes"]``
-  above 2 makes ``assessed_model()`` refuse a card target. Without a probability path ``predict_proba``
-  raises; with only a probability path ``predict`` returns 0 or 1, the more probable class.
+  positive class; ``predict_proba`` gives ``[1-p, p]``), or ``value`` (a regression's number, declared
+  alone; ``predict`` then gives the values too). Binary classification, or one number per row
+  (``value``): ``outputs["classes"]`` above 2 makes ``assessed_model()`` refuse a card target. Without a
+  probability path ``predict_proba`` raises; with only a probability path ``predict`` returns 0 or 1,
+  the more probable class.
+- A local regressor: ``OnnxSession.predict_value`` reads the model's first output, one number per row;
+  a model with a probability output is a classifier and is refused.
 """
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Protocol, runtime_checkable
 
 from aisc_plugin_interface.connections import EndpointBadResponse, EndpointError, _scrub, extract
 
 #: what ``model_session(outputs=...)`` may declare
-OUTPUT_KEYS = ("label", "probability", "classes")
+OUTPUT_KEYS = ("label", "probability", "classes", "value")
 
 
 @runtime_checkable
@@ -41,6 +47,8 @@ class ModelSession(Protocol):
 
     def predict_proba(self, rows) -> list[list[float]]: ...
 
+    def predict_value(self, rows) -> list[float]: ...
+
 
 def check_outputs(outputs: dict) -> dict:
     """The ``outputs`` a model_session declaration may give; ValueError otherwise."""
@@ -48,8 +56,12 @@ def check_outputs(outputs: dict) -> dict:
     unknown = [k for k in outputs if k not in OUTPUT_KEYS]
     if unknown:
         raise ValueError(f"outputs: {', '.join(map(repr, unknown))} unknown (known: {', '.join(OUTPUT_KEYS)})")
-    if not outputs.get("label") and not outputs.get("probability"):
-        raise ValueError("outputs: declare where the answer carries the label, the probability or both")
+    if outputs.get("value") and any(outputs.get(k) is not None for k in ("label", "probability", "classes")):
+        raise ValueError("outputs: value (a regression's number) is declared alone, without label, probability"
+                         " or classes")
+    if not outputs.get("label") and not outputs.get("probability") and not outputs.get("value"):
+        raise ValueError("outputs: declare where the answer carries the label, the probability or both, or the"
+                         " value")
     classes = outputs.get("classes")
     if classes is not None and (isinstance(classes, bool) or not isinstance(classes, int) or classes < 2):
         raise ValueError(f"outputs: classes is the number of classes, a whole number from 2: {classes!r}")
@@ -76,6 +88,8 @@ class EndpointSession:
         self._secret = getattr(descriptor, "secret", None)
 
     def predict(self, rows) -> list:
+        if self.outputs.get("value"):
+            return self.predict_value(rows)
         if not self.outputs.get("label"):
             return [int(p[1] > p[0]) for p in self.predict_proba(rows)]
         labels = []
@@ -99,6 +113,18 @@ class EndpointSession:
                                          f" not a number from 0 to 1: {said!r}")
             proba.append([1.0 - float(p), float(p)])
         return proba
+
+    def predict_value(self, rows) -> list[float]:
+        if not self.outputs.get("value"):
+            raise ValueError("outputs: this model session declares no value output")
+        values = []
+        for n, answer in self._answers(rows):
+            v = self._output(answer, n, "value")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                said = _scrub(str(v), self._secret)[:100]
+                raise ModelOutputMissing(f"row {n}: the value at {self.outputs['value']!r} is not a number: {said!r}")
+            values.append(float(v))
+        return values
 
     def _answers(self, rows):
         """(row number from 1, the answer's value) for each row, in order; a row not answered yet is sent."""
@@ -164,6 +190,23 @@ class OnnxSession:
         if len(rows) == 0:
             return []
         return self._proba(rows).tolist()
+
+    def predict_value(self, rows) -> list[float]:
+        """One number per row: a regressor's first output."""
+        import numpy as np
+
+        if len(rows) == 0:
+            return []
+        if self._probability is not None:
+            raise ValueError("this model has a probability output: it is a classifier; predict_value reads a"
+                             " regressor's single number per row")
+        values = np.asarray(self._run(rows)[0], dtype=np.float64)
+        if values.ndim == 2 and values.shape[1] == 1:
+            values = values.squeeze(1)
+        if values.ndim != 1 or values.shape[0] != len(rows):
+            raise ValueError(f"the model's first output has shape {values.shape}; a value output has one number"
+                             " per row")
+        return [float(x) for x in values]
 
     def _proba(self, rows):
         import numpy as np
