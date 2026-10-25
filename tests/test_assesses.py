@@ -353,3 +353,122 @@ def test_which_card_accesses_need_a_connection():
     # an old declaration says it with its required flag
     assert not card_needs_connection(OldOptional) and card_needs_connection(OldTables)
     assert not card_needs_connection(OldFiles)
+
+
+# an optional card access: the run may have no card target, or one without an endpoint
+
+KEY = "component:0b9c7a1e-0000-4000-8000-000000000002"
+
+
+def optional_tables():
+    @assesses(card=dataset_through_target_access(("a", "b"), required=False))
+    class Tables(Base):
+        pass
+
+    return Tables
+
+
+def test_a_card_access_can_be_optional():
+    Tables = optional_tables()
+    assert target_kinds_of(Tables) == ("card",)
+    assert Tables.card_access == "dataset_through_target"
+    assert Tables.target_access_required is False
+    assert Tables.dataset_through_target_required is False
+    assert Tables.dataset_through_target_inputs == ("a", "b")
+    assert Tables.card_access_required is False
+    assert card_needs_connection(Tables) is False
+
+
+def test_an_optional_dataset_access_runs_on_the_uploaded_data_without_a_target(platform):
+    assert bound(optional_tables()).evaluate({}) == "done"
+    assert platform.seen == []
+
+
+def test_an_optional_dataset_access_runs_when_the_target_has_no_endpoint(stub, monkeypatch):
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection",
+               (404, {"detail": "Training data has no endpoint: set one under Manage, Components and connections",
+                      "reason": "no_endpoint"}))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
+    assert bound(optional_tables(), f"target:{PID}/{KEY}").evaluate({}) == "done"
+    assert len(stub.seen) == 1
+
+
+def test_an_optional_endpoint_access_runs_unchanged_without_a_target(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    @assesses(card=system_under_test_access(protocols=("openai",), env=ENV, required=False))
+    class Live(Base):
+        pass
+
+    assert Live.target_access_required is False
+    assert Live.card_access_required is False
+    assert card_needs_connection(Live) is False
+    t = bound(Live)
+    assert t.evaluate({}) == "done"
+    assert t.seen is None
+
+
+def test_the_card_access_is_required_by_default():
+    import inspect
+
+    assert dataset_through_target_access(("a",)).required is True
+    assert system_under_test_access(("openai",), env=ENV).required is True
+    assert model_session({"label": "l"}).required is True
+    assert inputs_access().required is True
+    for builder in (dataset_through_target_access, system_under_test_access):
+        parameter = inspect.signature(builder).parameters["required"]
+        assert parameter.default is True
+
+
+def test_a_required_flag_on_the_builder_is_recorded():
+    access = dataset_through_target_access(("a",), required=False)
+    assert access.required is False
+    assert access.access == "dataset_through_target"
+
+
+def test_optional_with_a_local_model_too_needs_no_connection():
+    @assesses(card=dataset_through_target_access(("rows",), required=False), local_model=onnx())
+    @model_input
+    class Tables(Base):
+        pass
+
+    assert target_kinds_of(Tables) == ("card", "local_model")
+    assert Tables.dataset_through_target_required is False
+    assert card_needs_connection(Tables) is False
+
+
+def test_with_a_local_model_and_the_default_flag_a_card_target_still_needs_a_connection():
+    @assesses(card=system_under_test_access(protocols=("openai",), env=ENV), local_model=onnx())
+    @model_input
+    class Live(Base):
+        pass
+
+    assert card_needs_connection(Live) is True
+    assert Live.card_access_required is True
+
+
+def test_a_class_without_a_card_has_no_card_access_flag():
+    @assesses(local_model=onnx())
+    @model_input
+    class Local(Base):
+        pass
+
+    assert Local.card_access_required is None
+    assert card_needs_connection(Local) is False
+
+
+def test_the_optional_builder_declares_what_the_old_optional_decorator_declares():
+    @dataset_through_target(datasets=("r",), required=False)
+    class Old(Base):
+        pass
+
+    @assesses(card=dataset_through_target_access(("r",), required=False))
+    class New(Base):
+        pass
+
+    for read in (target_kinds_of, card_needs_connection, card_protocols_of, target_access_of):
+        assert read(Old) == read(New), read.__name__
+    for attribute in ("target_access_required", "dataset_through_target_required", "dataset_through_target_inputs"):
+        assert getattr(Old, attribute) == getattr(New, attribute), attribute
+    assert [d.name for d in Old().input_definitions] == [d.name for d in New().input_definitions]
