@@ -358,3 +358,153 @@ def test_a_local_session_ignores_per_run_answer_paths_but_still_validates_them(o
     assert isinstance(plugin.assessed_model(outputs={"label": "verdict"}), OnnxSession)
     with pytest.raises(ValueError, match="colour"):
         plugin.assessed_model(outputs={"label": "verdict", "colour": "c"})
+
+
+# a regression's number: the value output
+
+import importlib  # noqa: E402
+
+# the module (the package's own ``model_session`` is the builder of the same name)
+sessions = importlib.import_module("aisc_plugin_interface.model_session")
+from aisc_plugin_interface.model_session import ModelOutputMissing  # noqa: E402
+
+VALUE_ROWS = [{"a": 1.0, "b": 2.0}, {"a": 3.0, "b": 0.0}]
+
+
+def tiny_regressor(flat=False):
+    """A two-feature linear regressor, one number per row: features @ W + B with W = [[2], [-1]] and
+    B = [0.5]; ``flat`` gives W the shape [2], so the output has shape [None] instead of [None, 1]."""
+    from onnx import TensorProto, helper
+
+    w_shape, out_shape = ([2], [None]) if flat else ([2, 1], [None, 1])
+    graph = helper.make_graph(
+        [helper.make_node("MatMul", ["features", "W"], ["xw"]),
+         helper.make_node("Add", ["xw", "B"], ["variable"])],
+        "tiny_regressor",
+        [helper.make_tensor_value_info("features", TensorProto.FLOAT, [None, 2])],
+        [helper.make_tensor_value_info("variable", TensorProto.FLOAT, out_shape)],
+        initializer=[helper.make_tensor("W", TensorProto.FLOAT, w_shape, [2.0, -1.0]),
+                     helper.make_tensor("B", TensorProto.FLOAT, [1], [0.5])])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    return model.SerializeToString()
+
+
+@pytest.fixture
+def onnx_runtime():
+    pytest.importorskip("onnx", reason="the local model session runs an ONNX model built with onnx")
+    pytest.importorskip("onnxruntime", reason="the local model session runs its model with onnxruntime")
+
+
+def value_scorer(**declared):
+    @assesses(card=model_session(outputs={"value": "prediction"}, **declared))
+    class Regressor(Base):
+        pass
+
+    return Regressor
+
+
+def test_value_output_keys():
+    assert sessions.OUTPUT_KEYS == ("label", "probability", "classes", "value")
+
+
+def test_value_output_reads_a_number(system):
+    system.route("/score", (200, {"prediction": 3}), (200, {"prediction": 2.5}), (200, {"prediction": -1}))
+    values = bound(value_scorer(), target=True).assessed_model().predict_value(ROWS)
+    assert values == [3.0, 2.5, -1.0]
+    assert all(type(v) is float for v in values)
+    assert len(calls(system)) == 3
+
+
+@pytest.mark.parametrize("outputs", [{"value": "p", "probability": "q"}, {"value": "p", "label": "l"},
+                                     {"value": "p", "classes": 2}])
+def test_value_is_declared_alone(outputs):
+    with pytest.raises(ValueError, match="value .*declared alone"):
+        model_session(outputs=outputs)
+
+
+def test_predict_on_a_value_session_gives_the_values(system):
+    system.route("/score", (200, {"prediction": 3}), (200, {"prediction": 2.5}), (200, {"prediction": -1}))
+    model = bound(value_scorer(), target=True).assessed_model()
+    assert model.predict(ROWS) == [3.0, 2.5, -1.0]
+    model.predict_value(ROWS)
+    assert len(calls(system)) == 3
+    with pytest.raises(ValueError, match="no probability output"):
+        model.predict_proba(ROWS)
+
+
+def test_predict_value_needs_a_value_output(system):
+    model = bound(card_scorer(), target=True).assessed_model()
+    with pytest.raises(ValueError, match="declares no value output"):
+        model.predict_value(ROWS)
+    assert calls(system) == []
+
+
+@pytest.mark.parametrize("said", ["high", True, None, float("inf")])
+def test_a_value_that_is_not_a_number_fails_naming_the_row(system, said):
+    system.route("/score", (200, {"prediction": said}))                    # inf goes out as Infinity
+    model = bound(value_scorer(strict=True), target=True).assessed_model()
+    with pytest.raises(ModelOutputMissing, match=r"row 1: the value at 'prediction' is not a number"):
+        model.predict_value(ROWS)
+
+
+def test_per_run_value_path(system):
+    system.route("/score", (200, {"y": 0.25}))
+    model = bound(card_scorer(), target=True).assessed_model(outputs={"value": "y"})
+    assert model.predict_value(ROWS[:1]) == [0.25]
+
+
+def test_onnx_value_is_the_first_output_squeezed(onnx_runtime):
+    for flat in (False, True):
+        values = OnnxSession(tiny_regressor(flat=flat)).predict_value(VALUE_ROWS)
+        assert values == pytest.approx([0.5, 6.5])
+        assert all(type(v) is float for v in values)
+
+
+def test_onnx_value_refuses_a_classifier(onnx_bytes):
+    with pytest.raises(ValueError, match="classifier"):
+        OnnxSession(onnx_bytes).predict_value(VALUE_ROWS)
+
+
+def test_onnx_value_of_no_rows_is_empty(onnx_runtime):
+    assert OnnxSession(tiny_regressor()).predict_value([]) == []
+
+
+def test_both_sessions_are_model_sessions_with_predict_value(onnx_runtime):
+    class NoClient:
+        descriptor = None
+
+    assert isinstance(OnnxSession(tiny_regressor()), ModelSession)
+    assert isinstance(EndpointSession(NoClient(), {"label": "l"}), ModelSession)
+    assert hasattr(ModelSession, "predict_value")
+
+
+# under a run pass the session's rows go through the platform
+
+ASK_PATH = f"/internal/facade/{PID}/mcas-score/aisc/ask"
+
+
+def asked(request):
+    """The platform's answer to an ask: the scorer's answer to the posted input."""
+    return {"output": score({"body": json.dumps(json.loads(request["body"])["input"]).encode()}),
+            "refused": False, "refusal_reason": None, "status": 200, "latency_ms": 7}
+
+
+def test_a_model_session_under_a_pass_goes_through_the_platform(stub, monkeypatch):
+    resolved = {k: v for k, v in SCORER.items() if k != "secret"}
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection",
+               (200, dict(resolved, has_secret=True, base_url=stub.base, allowed_hosts=[stub.host],
+                          denied_addresses=[])))
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/run-keys",
+               (201, {"key": "aisc-run-abc", "expires_at": "2026-10-26T00:00:00+00:00", "connection": "mcas-score",
+                      "capabilities": ["text", "history"], "target": SCORER["target"],
+                      "endpoints": {"aisc": {"ask_url": stub.base + ASK_PATH}}}))
+    stub.route(ASK_PATH, (200, asked))
+    stub.route("/score", (200, score))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_RUN_PASS", "pass-123")
+    monkeypatch.delenv("PLATFORM_CONNECTIONS_TOKEN", raising=False)
+    model = bound(card_scorer(), target=True).assessed_model()
+    assert model.predict_proba(ROWS) == [pytest.approx(p) for p in ([0.5, 0.5], [0.2, 0.8], [0.98, 0.02])]
+    assert len([r for r in stub.seen if r["path"] == ASK_PATH]) == 3
+    assert calls(stub) == []
