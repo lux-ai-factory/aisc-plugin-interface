@@ -608,10 +608,26 @@ class MyPlugin(BaseEvaluationPlugin):
             ...                          # answer.text
 ```
 
-The client resolves the connection from the platform, renders the request, calls the system, reads
-the answer and records what was assessed as the artifact `connection-<name>.json` (without the key).
+The client resolves the connection from the platform and records what was assessed as the artifact
+`connection-<name>.json` (without the key). How it reaches the system depends on the run:
+
+- **Under a run pass** (`PLATFORM_RUN_PASS`, every run the platform starts), the plugin never holds the
+  target's key: the client resolves the connection without it, takes a run key for it from the platform
+  and sends each `ask` to the platform's `aisc/ask` (`{"input", "history", "params"}` with
+  `Authorization: Bearer <run key>`). The platform renders the request, calls the system with its
+  retries and reads the answer; the client makes one attempt and waits `4 x timeout_s + 15` seconds
+  (`facade_timeout_s`). The platform's error codes are raised as the classes a direct call raises
+  (`FACADE_ERRORS`: `auth`, `not_found`, `timeout`, `bad_response`, `blocked`; anything else is an
+  `EndpointError`), with the platform's message when it gives one; a 401 means the run's pass has ended,
+  404 and 410 are `EndpointNotFound`, 400 is `BadRequest`. The ask URL must be on `PLATFORM_URL`'s
+  origin, or the run key is not sent. Asking with `tools=` an endpoint that does not carry tools is
+  refused before the call.
+- **Directly**, for a client made by hand from a `Descriptor` (tests, standalone tools) and a client
+  resolved with the service token of older setups (`PLATFORM_CONNECTIONS_TOKEN`, no pass): the client
+  renders the request, calls the system and reads the answer itself, with the rules below.
+
 Errors are `EndpointAuthError`, `EndpointNotFound` (and its `TargetHasNoEndpoint`), `EndpointTimeout`,
-`EndpointBadResponse` and `BlockedAddress`, all subclasses of `EndpointError`. A connection the system
+`EndpointBadResponse`, `BlockedAddress` and `BadRequest`, all subclasses of `EndpointError`. A connection the system
 drops is retried like a timeout; an answer past `MAX_ANSWER_BYTES` (10 MiB) is refused, not read whole.
 An A2A answer of the wrong shape (a task, status, message or artifact that is not an object, artifacts
 that are not a list, a reply that is not JSON) is an `EndpointBadResponse`, never a crash of the plugin.

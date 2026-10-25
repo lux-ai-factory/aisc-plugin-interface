@@ -2,10 +2,21 @@
 
 A connection lives on the platform (schema ``connection`` of the project's database). An evaluation
 binds it as a ``resource`` input whose value is ``connection:<project pid>/<name>``. A plugin asks
-``EndpointClient.for_input(self, "<input name>")`` for a client, then ``client.ask(prompt)``; the
-client resolves the connection from the platform, renders the request, calls the system, reads the
-answer and turns a declared refusal into an answer marked ``refused``. It records what it assessed
-as the run artifact ``connection-<name>.json`` (never the key).
+``EndpointClient.for_input(self, "<input name>")`` (or ``for_target``) for a client, then
+``client.ask(prompt)``. It records what it assessed as the run artifact ``connection-<name>.json``
+(never the key).
+
+Two ways the client reaches the system:
+- **Through the platform**, when the run has a pass (``PLATFORM_RUN_PASS``): the client resolves the
+  connection without its key (a key the platform still returns is dropped), takes a run key for it and
+  asks the platform's ``aisc/ask``, which holds the key, renders the request, calls the system with its
+  retries and reads the answer. The client makes one attempt; the platform's error codes are raised as
+  the exception classes a direct call raises (``FACADE_ERRORS``). The ask URL must be on
+  ``PLATFORM_URL``'s origin, or the run key is not sent.
+- **Directly**, for a client made by hand from a ``Descriptor`` and one resolved with the service token
+  of older platforms and setups (``PLATFORM_CONNECTIONS_TOKEN``, no pass): the client renders the
+  request, calls the system, reads the answer and turns a declared refusal into an answer marked
+  ``refused``, with the rules below.
 
 Outbound calls are refused to loopback, private, link-local, multicast, reserved and unspecified
 addresses, to any hostname that resolves to one, to schemes other than http(s), and on redirects.
@@ -89,6 +100,22 @@ class EndpointTimeout(EndpointError):
 
 class EndpointBadResponse(EndpointError):
     """The system answered, but not with a usable answer."""
+
+
+class BadRequest(EndpointError):
+    """The request the plugin built cannot be sent: its history or params."""
+
+
+#: The platform's ``aisc/ask`` error codes (its 502 answer's ``error``), as the exceptions a direct call
+#: raises; ``error`` and any other code are a plain EndpointError.
+FACADE_ERRORS: dict[str, type[EndpointError]] = {
+    "auth": EndpointAuthError, "not_found": EndpointNotFound, "timeout": EndpointTimeout,
+    "bad_response": EndpointBadResponse, "blocked": BlockedAddress,
+}
+
+
+class NoEndpoint(RuntimeError):
+    """The target has no endpoint (or is not a target of the project)."""
 
 
 PLATFORM_AUTH_NEEDED = "PLATFORM_URL and PLATFORM_RUN_PASS (or PLATFORM_CONNECTIONS_TOKEN) must be set"
@@ -631,16 +658,92 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
         sleep(waits.pop(0))
 
 
+def _issue_run_key(pid: str, path: str, name: str) -> dict:
+    """Ask the platform for a run key; ``path`` is ``targets/<key>``, or ``connections/<name>`` for a
+    connection bound directly. When the platform refuses, its reason is passed on."""
+    base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
+    auth = platform_auth()
+    if not base or auth is None:
+        raise RuntimeError(f"{PLATFORM_AUTH_NEEDED} to reach a system under test")
+    req = urllib.request.Request(
+        f"{base}/internal/projects/{urllib.parse.quote(pid)}/{path}/run-keys",
+        data=b"", method="POST", headers={**auth, "Accept": "application/json"})
+    try:
+        # the opener that follows no redirect: the pass or token goes to the platform and nowhere else
+        with _OPENER.open(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except _Redirected as exc:
+        raise RuntimeError(f"the platform answered a run key request with a redirect ({exc.code})") from None
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except ValueError:
+            body = {}
+        detail = body.get("detail") if isinstance(body, dict) else None
+        reason = f": {detail}" if isinstance(detail, str) and detail else f" ({exc.code})"
+        # only the platform's no-endpoint answer lets an optional target be skipped
+        error = NoEndpoint if is_no_endpoint(exc.code, body) else RuntimeError
+        raise error(f"the platform refused a run key for {name!r}{reason}") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
+
+
+@dataclass(frozen=True)
+class RunKey:
+    """The run key the platform issued for one connection, and where to ask with it."""
+    ask_url: str
+    key: str = field(repr=False)                 # never in a log or a traceback
+    capabilities: tuple[str, ...] = ("text", "history")
+    expires_at: str | None = None
+
+
+def facade_timeout_s(descriptor: Descriptor) -> int:
+    """How long an ask through the platform waits: the platform's own call tries three times with up to
+    4 s between, and an A2A task may poll for one more timeout."""
+    return 4 * descriptor.timeout_s + 15
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parts = urllib.parse.urlsplit(url)
+    scheme = (parts.scheme or "").lower()
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    return scheme, (parts.hostname or "").lower(), port or (443 if scheme == "https" else 80)
+
+
+def _run_key_from(answer: Any, name: str) -> RunKey:
+    """The run key of the platform's run-keys answer, checked before anything is sent with it."""
+    answer = answer if isinstance(answer, dict) else {}
+    key = answer.get("key")
+    if not isinstance(key, str) or not key:
+        raise EndpointError(f"the platform's run key answer for {name!r} has no key")
+    endpoints = answer.get("endpoints") if isinstance(answer.get("endpoints"), dict) else {}
+    aisc = endpoints.get("aisc") if isinstance(endpoints.get("aisc"), dict) else {}
+    ask_url = aisc.get("ask_url")
+    if not isinstance(ask_url, str) or not ask_url:
+        raise EndpointError(f"the platform's run key answer for {name!r} has no aisc ask_url")
+    if _origin(ask_url) != _origin(os.environ.get("PLATFORM_URL") or ""):
+        raise EndpointError(f"the platform's ask URL for {name!r} is not on PLATFORM_URL; the run key is not sent"
+                            " there")
+    return RunKey(ask_url=ask_url, key=key, capabilities=tuple(answer.get("capabilities") or ("text", "history")),
+                  expires_at=answer.get("expires_at"))
+
+
 class EndpointClient:
-    """One system under test, for one plugin run."""
+    """One system under test, for one plugin run. ``run_key`` set: it asks through the platform (see the
+    module docstring); None: it calls the system directly."""
 
     def __init__(self, descriptor: Descriptor, plugin=None, allowed_hosts: list[str] | None = None,
-                 sleep: Callable[[float], None] = time.sleep, denied_addresses: list[str] | None = None):
+                 sleep: Callable[[float], None] = time.sleep, denied_addresses: list[str] | None = None,
+                 run_key: RunKey | None = None):
         self.descriptor = descriptor
         self._plugin = plugin
         self._allowed = allowed_hosts
         self._denied = denied_addresses
         self._sleep = sleep
+        self.run_key = run_key
         self._recorded = False
 
     @classmethod
@@ -651,17 +754,18 @@ class EndpointClient:
         found = target_of(plugin, input_name)
         if found is None:
             raise BadReference(f"input {input_name!r} is not bound to a target")
-        return cls._resolved(plugin, found["pid"], f"targets/{urllib.parse.quote(found['key'], safe=':')}/connection",
-                             found["key"], **kwargs)
+        target = f"targets/{urllib.parse.quote(found['key'], safe=':')}"
+        return cls._resolved(plugin, found["pid"], f"{target}/connection", found["key"], target, **kwargs)
 
     @classmethod
     def for_input(cls, plugin, input_name: str, **kwargs) -> "EndpointClient":
         """Resolve the connection a plugin's resource input refers to, through the platform."""
         pid, name = reference_of(plugin, input_name)
-        return cls._resolved(plugin, pid, f"connections/{urllib.parse.quote(name)}", name, **kwargs)
+        path = f"connections/{urllib.parse.quote(name)}"
+        return cls._resolved(plugin, pid, path, name, path, **kwargs)
 
     @classmethod
-    def _resolved(cls, plugin, pid: str, path: str, name: str, **kwargs) -> "EndpointClient":
+    def _resolved(cls, plugin, pid: str, path: str, name: str, run_key_path: str, **kwargs) -> "EndpointClient":
         base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
         auth = platform_auth()
         if not base or auth is None:
@@ -686,18 +790,72 @@ class EndpointClient:
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
         # The network rule is the platform's, per project: the internal hosts this connection may
         # reach and the addresses it never may. The run's own environment opens nothing.
-        return cls(Descriptor.from_dict(data), plugin=plugin, allowed_hosts=list(data.get("allowed_hosts") or []),
-                   denied_addresses=list(data.get("denied_addresses") or []), **kwargs)
+        allowed, denied = list(data.get("allowed_hosts") or []), list(data.get("denied_addresses") or [])
+        if not os.environ.get("PLATFORM_RUN_PASS"):
+            return cls(Descriptor.from_dict(data), plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,
+                       **kwargs)
+        # under a run pass the key stays on the platform: the client asks it with a run key
+        descriptor = Descriptor.from_dict({k: v for k, v in data.items() if k != "secret"})
+        try:
+            issued = _issue_run_key(pid, run_key_path, descriptor.name)
+        except NoEndpoint as exc:
+            raise TargetHasNoEndpoint(str(exc)) from None
+        except RuntimeError as exc:
+            raise EndpointError(str(exc)) from None
+        return cls(descriptor, plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,
+                   run_key=_run_key_from(issued, descriptor.name), **kwargs)
 
     def ask(self, input: Any, history: list | None = None, **params) -> Answer:
         """Send ``input`` (text, or a JSON object/list for a structured system) after ``history`` (a list of
         {"role", "content"} turns) and return the answer."""
-        answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep,
-                      denied_addresses=self._denied)
+        if self.run_key is not None:
+            answer = self._ask_platform(input, history, params)
+        else:
+            answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep,
+                          denied_addresses=self._denied)
         self._record()
         return answer
 
+    def _ask_platform(self, input: Any, history: list | None, params: dict) -> Answer:
+        """One POST to the platform's aisc/ask with the run key; the platform calls the system and retries."""
+        d, run_key = self.descriptor, self.run_key
+        label = d.label
+        if "tools" in params and "tools" not in run_key.capabilities:
+            raise EndpointError(f"{label}: this endpoint does not carry tools (it carries"
+                                f" {', '.join(run_key.capabilities)})")
+        body = {"input": input, "history": list(history or []), "params": dict(params)}
+        req = urllib.request.Request(run_key.ask_url, data=json.dumps(body).encode(), method="POST", headers={
+            "Authorization": f"Bearer {run_key.key}", "Content-Type": "application/json",
+            "Accept": "application/json"})
+        timeout = facade_timeout_s(d)
+        unreachable = f"{label}: the platform could not be reached to ask {d.name!r}"
+        try:
+            with _OPENER.open(req, timeout=timeout) as resp:
+                status, raw = resp.status, _read_capped(resp, label)
+        except _Redirected as exc:
+            raise EndpointError(f"{label}: the platform answered with a redirect ({exc.code}), which is not"
+                                " followed") from None
+        except urllib.error.HTTPError as exc:
+            status, raw = exc.code, _read_capped(exc, label)
+        except (TimeoutError, socket.timeout):
+            raise EndpointTimeout(f"{label}: the platform did not answer within {timeout}s") from None
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise EndpointTimeout(f"{label}: the platform did not answer within {timeout}s") from None
+            raise EndpointError(unreachable) from None
+        except (http.client.HTTPException, ConnectionError):
+            raise EndpointError(unreachable) from None
+        try:
+            payload = json.loads(raw) if raw else None
+        except ValueError:
+            payload = None
+        if 200 <= status < 300:
+            return _platform_answer(label, payload)
+        raise _platform_error(label, status, payload, run_key.key)
+
     def _record(self) -> None:
+        """``connection-<name>.json`` after the first answered ask: the settings without the key, and their
+        fingerprint, the same whichever way the client asks."""
         if self._recorded or self._plugin is None:
             return
         doc = {"connection": self.descriptor.public(), "sha256": self.descriptor.fingerprint(),
@@ -705,3 +863,36 @@ class EndpointClient:
         self._plugin.upload_artifact(f"connection-{self.descriptor.name}.json",
                                      json.dumps(doc, indent=2).encode())
         self._recorded = True
+
+
+def _platform_answer(label: str, payload: Any) -> Answer:
+    """The platform's 200 answer to an ask, as the Answer a direct call gives."""
+    if not isinstance(payload, dict) or "output" not in payload:
+        raise EndpointBadResponse(f"{label}: the platform's answer is not an answer")
+    status, latency = payload.get("status"), payload.get("latency_ms")
+    return Answer(text=payload["output"], refused=bool(payload.get("refused")),
+                  refusal_reason=payload.get("refusal_reason"),
+                  status=status if isinstance(status, int) and not isinstance(status, bool) else None,
+                  latency_ms=latency if isinstance(latency, int) and not isinstance(latency, bool) else None)
+
+
+def _platform_error(label: str, status: int, payload: Any, run_key: str) -> EndpointError:
+    """The exception for the platform's answer ``status`` to an ask (see FACADE_ERRORS)."""
+    body = payload if isinstance(payload, dict) else {}
+    detail = body.get("detail")
+    detail = _scrub(detail, run_key) if isinstance(detail, str) and detail else None
+    if status == 502 and isinstance(body.get("error"), str):
+        code = body["error"]
+        said = body.get("status")
+        return FACADE_ERRORS.get(code, EndpointError)(
+            detail[:500] if detail else f"{label}: the system under test failed behind the platform ({code})",
+            status=said if isinstance(said, int) and not isinstance(said, bool) else None)
+    if status == 401:
+        return EndpointAuthError(f"{label}: the platform refused the run key (401); the run's pass may have ended")
+    if status == 404:
+        return EndpointNotFound(f"{label}: the platform has no endpoint for this connection (404)")
+    if status == 410:
+        return EndpointNotFound(f"{label}: the connection was deleted (410)")
+    if status == 400:
+        return BadRequest(f"{label}: the platform refused the request (400){f': {detail}' if detail else ''}")
+    return EndpointError(f"{label}: the platform answered {status}")

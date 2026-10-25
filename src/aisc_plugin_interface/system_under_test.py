@@ -30,7 +30,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from aisc_plugin_interface.connections import BadReference, reference_of
+# NoEndpoint and _issue_run_key live in connections; their names stay here, and @system_under_test looks
+# _issue_run_key up in this module when it runs, so a test can replace it here
+from aisc_plugin_interface.connections import BadReference, NoEndpoint, _issue_run_key, reference_of  # noqa: F401
 from aisc_plugin_interface.targets import is_target, parse_target
 from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
 from aisc_plugin_interface.models.evaluation_input import InputType
@@ -185,43 +187,6 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
         return cls
 
     return decorator
-
-
-class NoEndpoint(RuntimeError):
-    """The target has no endpoint (or is not a target of the project)."""
-
-
-def _issue_run_key(pid: str, path: str, name: str) -> dict:
-    """Ask the platform for a run key; ``path`` is ``targets/<key>``, or ``connections/<name>`` for a
-    connection bound directly. When the platform refuses, its reason is passed on."""
-    from aisc_plugin_interface.connections import (
-        _OPENER, PLATFORM_AUTH_NEEDED, _Redirected, is_no_endpoint, platform_auth)
-
-    base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
-    auth = platform_auth()
-    if not base or auth is None:
-        raise RuntimeError(f"{PLATFORM_AUTH_NEEDED} to reach a system under test")
-    req = urllib.request.Request(
-        f"{base}/internal/projects/{urllib.parse.quote(pid)}/{path}/run-keys",
-        data=b"", method="POST", headers={**auth, "Accept": "application/json"})
-    try:
-        # the opener that follows no redirect: the pass or token goes to the platform and nowhere else
-        with _OPENER.open(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except _Redirected as exc:
-        raise RuntimeError(f"the platform answered a run key request with a redirect ({exc.code})") from None
-    except urllib.error.HTTPError as exc:
-        try:
-            body = json.loads(exc.read() or b"{}")
-        except ValueError:
-            body = {}
-        detail = body.get("detail") if isinstance(body, dict) else None
-        reason = f": {detail}" if isinstance(detail, str) and detail else f" ({exc.code})"
-        # only the platform's no-endpoint answer lets an optional target be skipped
-        error = NoEndpoint if is_no_endpoint(exc.code, body) else RuntimeError
-        raise error(f"the platform refused a run key for {name!r}{reason}") from None
-    except (urllib.error.URLError, TimeoutError):
-        raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
 
 
 def _set_dotted(config: dict, path: str, value: Any) -> None:
