@@ -2,6 +2,9 @@
 
 ## 2026-10-25: 0.4.0, upstream 0.3.0 merged; the target's key stays on the platform
 
+New
+- `required=` on `dataset_through_target_access` and `system_under_test_access` (default True). With `required=False` a run with no card target, or with one that has no endpoint, runs the plugin on its uploads unchanged, as the older decorators' `required=False`; `@assesses` records `card_access_required` and `card_needs_connection` honours it. Test: `tests/test_assesses.py`.
+
 Changed
 - Merged upstream 0.3.0 (its README and guide changes, `pydantic>=2.13.5`, `rich>=15.0.0`). This release is 0.4.0 so that a `>=0.4.0` constraint never resolves PyPI's 0.3.0, which lacks this branch's modules (`connections`, `system_under_test`, `targets`, `assesses`, `helpers`, `model_session`). Test: `tests/test_version.py`.
 

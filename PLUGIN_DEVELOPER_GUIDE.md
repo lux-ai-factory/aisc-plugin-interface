@@ -381,14 +381,21 @@ A plugin states what it assesses with `@assesses(card=..., local_model=...)`; at
 
   | Builder | The plugin |
   |---|---|
-  | `system_under_test_access(protocols=("openai",), fields=..., env=..., needs=...)` | calls its target, only through the target's endpoint (13.5); as `@system_under_test` |
-  | `dataset_through_target_access(datasets=("reference-dataset",))` | analyses tables; each row is first sent through the target's endpoint, as `@dataset_through_target` (13.6) |
+  | `system_under_test_access(protocols=("openai",), fields=..., env=..., needs=..., required=True)` | calls its target, only through the target's endpoint (13.5); as `@system_under_test` |
+  | `dataset_through_target_access(datasets=("reference-dataset",), required=True)` | analyses tables; each row is first sent through the target's endpoint, as `@dataset_through_target` (13.6) |
   | `inputs_access()` | only reads its inputs (datasets, models, files) and calls no system; as `@assesses_inputs` |
   | `model_session(outputs={...})` | scores rows with a model, whichever it is (13.3) |
 
 - `local_model=onnx(input="model")` says the plugin can assess a **local model file**: the ONNX file a
   person uploaded to the project, read through the plugin's own model input (`InputType.MODEL`). Declare
   that input below `@assesses`; the declaration fails at import if it is missing.
+
+`required=False` on `system_under_test_access` or `dataset_through_target_access` makes the card access
+optional: a run with no card target, or with a card target that has no endpoint (training data, say),
+runs the plugin on its uploaded inputs unchanged, as the older decorators do with `required=False`; any
+other failure to reach the platform still stops the run. The form then lets such a plugin pick a card
+target without a connection (`card_needs_connection(cls)` is False; `cls.card_access_required` records
+the flag, None when there is no `card=`).
 
 ```python
 from aisc_plugin_interface import (
@@ -614,7 +621,8 @@ saved as `target-answers-<dataset>.csv`, where a text cell or column name starti
 `target_row_limit` (0: every row) are read from the plugin's config when its form has them. Which fields
 of a row are sent is the endpoint's business: its body template (`{{input}}` sends the whole row). A
 connection bound directly (`connection:<pid>/<name>`) works as well as a target. With a target the
-platform says has no endpoint (training data, say) and `required=False` in the older decorator, the
+platform says has no endpoint (training data, say) and `required=False` (on the builder or the older
+decorator), the
 plugin runs on the uploads as they are; any other failure to resolve it (no such target or project, a
 platform that does not answer) still stops the run, and so does a target whose every call failed (one
 failed row is only that row's `target.error`).
