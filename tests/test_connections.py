@@ -70,9 +70,15 @@ def test_for_input_sends_the_run_pass_when_the_run_has_one(plugin, stub, monkeyp
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_RUN_PASS", "pass-123")
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "tok-123")
+    # under a pass the client also takes a run key, so the resolve is the first request
+    stub.route("/internal/projects/pid-1/connections/mcas-chat/run-keys",
+               (201, {"key": "aisc-run-abc", "expires_at": "2026-10-26T00:00:00+00:00", "connection": "mcas-chat",
+                      "capabilities": ["text", "history"],
+                      "endpoints": {"aisc": {"ask_url": f"{stub.base}/internal/facade/pid-1/mcas-chat/aisc/ask"}}}))
     monkeypatch.chdir(tmp_path)
     c.EndpointClient.for_input(plugin({"system": {"value": "connection:pid-1/mcas-chat"}}), "system")
-    headers = stub.seen[-1]["headers"]
+    assert stub.seen[0]["path"] == "/internal/projects/pid-1/connections/mcas-chat"
+    headers = stub.seen[0]["headers"]
     assert headers["x-aisc-run-pass"] == "pass-123" and "x-aisc-service-token" not in headers
 
 

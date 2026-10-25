@@ -205,3 +205,16 @@ def test_only_the_no_endpoint_answer_is_no_endpoint(stub, monkeypatch):
     stub.route("/internal/projects/p1/targets/k/run-keys", (404, {"detail": "x", "reason": "no_endpoint"}))
     with pytest.raises(sut.NoEndpoint):
         sut._issue_run_key("p1", "targets/k", "k")
+
+
+def test_the_run_key_helper_is_still_reachable_from_system_under_test(monkeypatch):
+    from aisc_plugin_interface import connections
+    from aisc_plugin_interface import system_under_test as sut
+
+    assert sut._issue_run_key is connections._issue_run_key
+    assert sut.NoEndpoint is connections.NoEndpoint
+    monkeypatch.delenv("PLATFORM_URL", raising=False)                      # no platform: only the patch answers
+    monkeypatch.setattr(sut, "_issue_run_key", lambda pid, path, name: ISSUED)
+    t = bound(make(protocols=("openai",), fields={"target.base_url": "base_url", "target.api_key": "api_key"}))
+    assert t.evaluate({}) == "done"
+    assert t.seen["config"] == {"target": {"base_url": f"{ROOT}/openai/v1", "api_key": "aisc-run-abc"}}

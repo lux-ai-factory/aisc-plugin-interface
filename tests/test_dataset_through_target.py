@@ -243,3 +243,48 @@ def test_a_json_declared_dataset_comes_back_as_rows_not_csv(system):
     assert t.evaluate({}) == "done"
     assert isinstance(t.seen, list) and t.seen[0]["target.score"] == 250
     assert "target-answers-rows.csv" in artifacts
+
+
+# under a run pass the rows go through the platform's aisc/ask
+
+ASK_PATH = f"/internal/facade/{PID}/mcas-score/aisc/ask"
+
+
+@pytest.fixture
+def through_the_platform(stub, monkeypatch):
+    resolved = {k: v for k, v in SCORER.items() if k != "secret"}
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/connection",
+               (200, dict(resolved, has_secret=True, base_url=stub.base, allowed_hosts=[stub.host],
+                          denied_addresses=[])))
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/run-keys",
+               (201, {"key": "aisc-run-abc", "expires_at": "2026-10-26T00:00:00+00:00", "connection": "mcas-score",
+                      "capabilities": ["text", "history"], "target": SCORER["target"],
+                      "endpoints": {"aisc": {"ask_url": stub.base + ASK_PATH}}}))
+    stub.route("/score", (200, score))
+    monkeypatch.setenv("PLATFORM_URL", stub.base)
+    monkeypatch.setenv("PLATFORM_RUN_PASS", "pass-123")
+    monkeypatch.delenv("PLATFORM_CONNECTIONS_TOKEN", raising=False)
+    return stub
+
+
+ASKED = (200, {"output": {"score": 250, "recommendation": "Approve"}, "refused": False, "refusal_reason": None,
+               "status": 200, "latency_ms": 4})
+
+
+def test_dataset_through_target_under_a_pass_goes_through_the_platform(through_the_platform):
+    stub = through_the_platform
+    stub.route(ASK_PATH, ASKED)
+    t, result = run(make(), stub)
+    assert result == "done"
+    for name in ("reference", "evaluated"):
+        assert list(t.seen[name]["target.score"]) == [250, 250, 250]
+    assert [r for r in stub.seen if r["path"] == "/score"] == []
+    assert len([r for r in stub.seen if r["path"] == ASK_PATH]) == 6
+
+    failed = (502, {"error": "bad_response", "status": 422, "detail": "MCAS scorer: the system answered 422: bad"})
+    stub.route(ASK_PATH, ASKED, failed, ASKED)
+    t, result = run(make(), stub)
+    assert result == "done"
+    errors = t.seen["reference"]["target.error"]
+    assert errors[1] == "MCAS scorer: the system answered 422: bad"
+    assert pd.isna(errors[0]) and pd.isna(errors[2])
