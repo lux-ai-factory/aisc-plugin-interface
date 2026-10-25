@@ -194,6 +194,114 @@ class Answer:
     refusal_reason: str | None = None
     status: int | None = None
     latency_ms: int | None = None
+    #: an OpenAI-style agent's tool calls (``choices[0].message.tool_calls``), None when it called none
+    tool_calls: list[dict] | None = None
+
+
+#: what a history message may be: OpenAI's chat messages, an assistant's tool calls and a tool's result
+HISTORY_ROLES = ("system", "user", "assistant", "tool")
+_MESSAGE_FIELDS = ("role", "content", "name", "tool_calls", "tool_call_id", "refusal")
+MAX_HISTORY_MESSAGES = 200
+MAX_HISTORY_BYTES = 1_048_576
+MAX_PARAMS_BYTES = 262_144
+
+
+def _good_call(call: Any) -> bool:
+    function = call.get("function") if isinstance(call, dict) else None
+    return (isinstance(call.get("id") if isinstance(call, dict) else None, str) and call.get("type") == "function"
+            and isinstance(function, dict) and isinstance(function.get("name"), str)
+            and isinstance(function.get("arguments"), str))
+
+
+def _check_message(i: int, m: Any) -> None:
+    where = f"history[{i}]"
+    if not isinstance(m, dict) or "role" not in m:
+        raise BadRequest(f"{where}: a message is an object with a role")
+    role = m["role"]
+    if role not in HISTORY_ROLES:
+        raise BadRequest(f"{where}: role {role!r} is not one of {', '.join(HISTORY_ROLES)}")
+    for key in m:
+        if key not in _MESSAGE_FIELDS or (key == "refusal" and role != "assistant"):
+            raise BadRequest(f"{where}: {key!r} is not a message field ({', '.join(_MESSAGE_FIELDS)})")
+    if "name" in m and not isinstance(m["name"], str):
+        raise BadRequest(f"{where}: name is text")
+    if role in ("system", "user") and not isinstance(m.get("content"), str):
+        raise BadRequest(f"{where}: a {role} message needs text content")
+    if "tool_calls" in m and role != "assistant":
+        raise BadRequest(f"{where}: only an assistant message carries tool_calls")
+    if "tool_call_id" in m and role != "tool":
+        raise BadRequest(f"{where}: only a tool message carries a tool_call_id")
+    if role == "assistant":
+        calls = m.get("tool_calls")
+        if calls is not None and not isinstance(calls, list):
+            raise BadRequest(f"{where}: an assistant message needs text content or tool_calls")
+        for j, call in enumerate(calls or []):
+            if not _good_call(call):
+                raise BadRequest(f"{where}: tool_calls[{j}] needs an id, type 'function' and a function with a name"
+                                 " and arguments text")
+        content = m.get("content")
+        if not isinstance(content, str) and not (content is None and calls):
+            raise BadRequest(f"{where}: an assistant message needs text content or tool_calls")
+        if m.get("refusal") is not None and not isinstance(m["refusal"], str):
+            raise BadRequest(f"{where}: refusal is text")
+    if role == "tool" and not (isinstance(m.get("tool_call_id"), str) and m["tool_call_id"]
+                               and isinstance(m.get("content"), str)):
+        raise BadRequest(f"{where}: a tool message needs a tool_call_id and text content")
+
+
+def check_history(history: list | None) -> list[dict]:
+    """``history`` checked and copied: OpenAI chat messages (a system, user, assistant or tool message;
+    an assistant's tool calls; a tool's result), at most MAX_HISTORY_MESSAGES and MAX_HISTORY_BYTES as
+    JSON. The first fault raises BadRequest naming the message; None is []."""
+    if history is None:
+        return []
+    if not isinstance(history, list):
+        raise BadRequest("history: a list of messages")
+    if len(history) > MAX_HISTORY_MESSAGES:
+        raise BadRequest(f"history: {len(history)} messages, more than {MAX_HISTORY_MESSAGES}")
+    try:
+        size = len(json.dumps(history).encode())
+    except (TypeError, ValueError):
+        size = None
+    if size is not None and size > MAX_HISTORY_BYTES:
+        raise BadRequest(f"history: {size} bytes as JSON, more than {MAX_HISTORY_BYTES}")
+    for i, message in enumerate(history):
+        _check_message(i, message)
+    if size is None:
+        raise BadRequest("history: not JSON")
+    return list(history)
+
+
+def check_params(params: dict) -> dict:
+    """The params of an ask, refused (BadRequest) when they are not JSON or are larger than
+    MAX_PARAMS_BYTES as JSON."""
+    try:
+        size = len(json.dumps(params).encode())
+    except (TypeError, ValueError) as exc:
+        raise BadRequest(f"params: not JSON: {str(exc)[:100]}") from None
+    if size > MAX_PARAMS_BYTES:
+        raise BadRequest(f"params: {size} bytes as JSON, more than {MAX_PARAMS_BYTES}")
+    return params
+
+
+def _ends_with_tool_results(history: list) -> bool:
+    return bool(history) and isinstance(history[-1], dict) and history[-1].get("role") == "tool"
+
+
+def _check_input(d: "Descriptor", input: Any, history: list) -> None:
+    """An OpenAI-style call without ``input`` continues a tool loop: the history must end with the tool
+    results, and is sent as it is."""
+    if d.kind == "openai" and input is None and not _ends_with_tool_results(history):
+        raise BadRequest("input is required unless the history ends with tool results")
+
+
+def _tool_calls_of(label: str, calls: Any) -> list[dict] | None:
+    """An answer's tool calls: None when there are none, else a list of objects."""
+    if calls is None or calls == []:
+        return None
+    if not isinstance(calls, list) or not all(isinstance(c, dict) for c in calls):
+        raise EndpointBadResponse(f"{label}: the answer's tool_calls are not a list of calls")
+    return calls
 
 
 def allowed_hosts_from_env() -> list[str]:
@@ -450,8 +558,11 @@ def render_request(d: Descriptor, input: Any, history: list | None, params: dict
             body = {"inputs": [{"name": "input", "shape": [1], "datatype": "BYTES", "data": [input]}]}
         return "POST", url, headers, json.dumps(body).encode()
     if d.kind == "openai":
+        _check_input(d, input, history)
         url = d.base_url.rstrip("/") + "/chat/completions"
-        body: Any = {"model": d.model, "messages": history + [{"role": "user", "content": input}], **params}
+        # no input continues a tool loop: the history, ending with the tool results, goes as it is
+        messages = history if input is None else history + [{"role": "user", "content": input}]
+        body: Any = {"model": d.model, "messages": messages, **params}
         method = "POST"
         if d.secret and not d.secret_header:
             headers["Authorization"] = f"Bearer {d.secret}"
@@ -591,6 +702,7 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
          waits: tuple = RETRY_WAITS, denied_addresses: list[str] | None = None) -> Answer:
     """One question to the system, with the retries (``waits``: seconds before each retry; ``()``
     for a single probe, as the platform's Test button does); see EndpointClient.ask."""
+    history = check_history(history)
     method, url, headers, data = render_request(d, input, history, dict(params or {}))
     waits = list(waits)
     while True:
@@ -645,9 +757,10 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
                 return _a2a_answer(d, payload, url, headers,
                                    allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),
                                    sleep, status, latency, denied_addresses)
+            if status < 300 and d.kind == "openai":
+                return _openai_answer(d, payload, status, latency)
             if status < 300:
-                path = {"openai": "choices[0].message.content", "oip": d.response_path or "outputs[0].data[0]"}.get(
-                    d.kind, d.response_path)
+                path = {"oip": d.response_path or "outputs[0].data[0]"}.get(d.kind, d.response_path)
                 try:
                     return Answer(text=extract(payload, path), status=status, latency_ms=latency)
                 except KeyError:
@@ -806,8 +919,13 @@ class EndpointClient:
                    run_key=_run_key_from(issued, descriptor.name), **kwargs)
 
     def ask(self, input: Any, history: list | None = None, **params) -> Answer:
-        """Send ``input`` (text, or a JSON object/list for a structured system) after ``history`` (a list of
-        {"role", "content"} turns) and return the answer."""
+        """Send ``input`` (text, or a JSON object/list for a structured system) after ``history`` (OpenAI
+        chat messages: {"role", "content"} turns, an assistant's ``tool_calls``, a tool's result; see
+        ``check_history``) and return the answer. ``params`` fill the template's ``{{params.x}}`` and, for an
+        OpenAI-style endpoint, go into the body (``tools``, ``tool_choice``, ...). ``input`` None, after
+        a history that ends with tool results, continues the tool loop. A bad history or params raise
+        BadRequest before anything is sent."""
+        check_params(params)
         if self.run_key is not None:
             answer = self._ask_platform(input, history, params)
         else:
@@ -820,10 +938,12 @@ class EndpointClient:
         """One POST to the platform's aisc/ask with the run key; the platform calls the system and retries."""
         d, run_key = self.descriptor, self.run_key
         label = d.label
+        history = check_history(history)
+        _check_input(d, input, history)
         if "tools" in params and "tools" not in run_key.capabilities:
             raise EndpointError(f"{label}: this endpoint does not carry tools (it carries"
                                 f" {', '.join(run_key.capabilities)})")
-        body = {"input": input, "history": list(history or []), "params": dict(params)}
+        body = {"input": input, "history": history, "params": dict(params)}
         req = urllib.request.Request(run_key.ask_url, data=json.dumps(body).encode(), method="POST", headers={
             "Authorization": f"Bearer {run_key.key}", "Content-Type": "application/json",
             "Accept": "application/json"})
@@ -873,7 +993,20 @@ def _platform_answer(label: str, payload: Any) -> Answer:
     return Answer(text=payload["output"], refused=bool(payload.get("refused")),
                   refusal_reason=payload.get("refusal_reason"),
                   status=status if isinstance(status, int) and not isinstance(status, bool) else None,
-                  latency_ms=latency if isinstance(latency, int) and not isinstance(latency, bool) else None)
+                  latency_ms=latency if isinstance(latency, int) and not isinstance(latency, bool) else None,
+                  tool_calls=_tool_calls_of(label, payload.get("tool_calls")))
+
+
+def _openai_answer(d: Descriptor, payload: Any, status: int, latency: int) -> Answer:
+    """An OpenAI chat completion: the message's text, or its tool calls (with no text, or null text)."""
+    try:
+        message = extract(payload, "choices[0].message")
+    except KeyError:
+        message = None
+    calls = _tool_calls_of(d.label, message.get("tool_calls")) if isinstance(message, dict) else None
+    if not isinstance(message, dict) or ("content" not in message and calls is None):
+        raise EndpointBadResponse(f"{d.label}: no answer at 'choices[0].message.content' in the response")
+    return Answer(text=message.get("content"), status=status, latency_ms=latency, tool_calls=calls)
 
 
 def _platform_error(label: str, status: int, payload: Any, run_key: str) -> EndpointError:

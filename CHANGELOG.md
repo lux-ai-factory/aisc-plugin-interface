@@ -6,6 +6,7 @@ New
 - `required=` on `dataset_through_target_access` and `system_under_test_access` (default True). With `required=False` a run with no card target, or with one that has no endpoint, runs the plugin on its uploads unchanged, as the older decorators' `required=False`; `@assesses` records `card_access_required` and `card_needs_connection` honours it. Test: `tests/test_assesses.py`.
 - The `value` output of `model_session(outputs={"value": "<path>"})`, declared alone, and `predict_value(rows)` on both sessions: one float per row from a card target's answer, or a local regressor's first output (a classifier is refused). `predict` on a value session gives the values. Test: `tests/test_model_session.py`.
 - `model_session(outputs, strict=True)`: declared `strict=False`, a card model session skips and counts the rows its target rejects (a refusal, a 4xx answer, an answer without a declared output or with one it cannot read): `None` at that row, `session.rejected` (index, reason) for the last call, the run artifact `rejected-rows.json` (`REJECTED_ROWS_ARTIFACT`), and `AllRowsRejected` when every row of a call is rejected. A failure of the target itself (auth, not found, timeout, blocked, 5xx) still stops the run. The default stays strict: a plugin that relied on the run stopping on one bad row keeps that behaviour; `strict=False` is opt-in, and a plugin that opts in must drop the `None` rows itself. `OnnxSession.rejected` is always empty. Test: `tests/test_rejected_rows.py`.
+- `Answer.tool_calls` (last field, None when the agent called no tool): read from an OpenAI-style answer (`choices[0].message.tool_calls`, also when `content` is null or absent) and from the platform's answer; tool calls that are not a list of objects are an `EndpointBadResponse`. History items may be full OpenAI messages (an assistant's `tool_calls`, a tool's `tool_call_id`, `name`, `refusal`), checked by `check_history` in `call()` and in an ask through the platform, capped at 200 messages and 1 MiB; params capped at 256 KiB and refused when not JSON; each fault is a `BadRequest` before anything is sent. `ask(input=None)` after a history that ends with tool results continues the tool loop on an OpenAI-style endpoint (no new user message). Test: `tests/test_history_and_tools.py`.
 
 Changed
 - Merged upstream 0.3.0 (its README and guide changes, `pydantic>=2.13.5`, `rich>=15.0.0`). This release is 0.4.0 so that a `>=0.4.0` constraint never resolves PyPI's 0.3.0, which lacks this branch's modules (`connections`, `system_under_test`, `targets`, `assesses`, `helpers`, `model_session`). Test: `tests/test_version.py`.
@@ -16,7 +17,7 @@ Security
 Unchanged
 - `@system_under_test`, `@dataset_through_target`, `@assesses_inputs`; `system_under_test._issue_run_key` and `system_under_test.NoEndpoint` stay importable (they now live in `connections`). Test: `tests/test_system_under_test.py`.
 
-Check: `uv run --with pytest --with pandas --with onnx --with onnxruntime --with "pydantic>=2.13.5" --with "rich>=15.0.0" python -m pytest -q`.
+Check: `uv run --with pytest --with pandas --with onnx --with onnxruntime --with "pydantic>=2.13.5" --with "rich>=15.0.0" python -m pytest -q` (394 passed).
 
 ## 2026-10-24: 0.2.9, what a plugin assesses and its helper models
 

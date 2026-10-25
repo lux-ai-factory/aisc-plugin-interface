@@ -626,6 +626,21 @@ The client resolves the connection from the platform and records what was assess
   resolved with the service token of older setups (`PLATFORM_CONNECTIONS_TOKEN`, no pass): the client
   renders the request, calls the system and reads the answer itself, with the rules below.
 
+**History, params and tool calls.** `history` is a list of OpenAI chat messages: `system`, `user`,
+`assistant` and `tool` messages with the fields `role`, `content`, `name`, `tool_calls` (an assistant's,
+each `{"id", "type": "function", "function": {"name", "arguments"}}`), `tool_call_id` (a tool's) and
+`refusal` (an assistant's, as OpenAI returns it). A system or user message needs text content, an
+assistant message text content or tool calls, a tool message a `tool_call_id` and text content. At most
+200 messages and 1 MiB as JSON (`MAX_HISTORY_MESSAGES`, `MAX_HISTORY_BYTES`); `params` at most 256 KiB
+as JSON (`MAX_PARAMS_BYTES`). A history or params that break a rule raise `BadRequest` naming the
+message, before anything is sent, in both ways of asking (`check_history` is the same code the platform
+runs). `tools=`, `tool_choice=` and `parallel_tool_calls=` are ordinary params: an OpenAI-style endpoint
+gets them in its body. An answer that calls tools has `answer.tool_calls` (a list of the calls, `text`
+then usually None); a text answer has `tool_calls` None. To continue the loop, append the assistant's
+message and one `tool` message per call to the history and ask with `input=None`: the history is sent
+as it is, with no new user message (an OpenAI-style endpoint; `input=None` after a history that does not
+end with tool results raises `BadRequest`).
+
 Errors are `EndpointAuthError`, `EndpointNotFound` (and its `TargetHasNoEndpoint`), `EndpointTimeout`,
 `EndpointBadResponse`, `BlockedAddress` and `BadRequest`, all subclasses of `EndpointError`. A connection the system
 drops is retried like a timeout; an answer past `MAX_ANSWER_BYTES` (10 MiB) is refused, not read whole.
