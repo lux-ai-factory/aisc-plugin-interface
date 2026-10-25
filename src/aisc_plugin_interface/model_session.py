@@ -26,6 +26,11 @@ Both sessions take ``rows`` as a list of dicts (feature name -> value) and retur
   (``value``): ``outputs["classes"]`` above 2 makes ``assessed_model()`` refuse a card target. Without a
   probability path ``predict_proba`` raises; with only a probability path ``predict`` returns 0 or 1,
   the more probable class.
+- Rows the target rejects (a refusal, a 4xx answer, an answer without a declared output or with one the
+  session cannot read): a strict session (the default, ``model_session(outputs, strict=True)``) stops on
+  the first; ``strict=False`` gives None at that row, lists it in ``session.rejected`` and saves
+  ``rejected-rows.json`` with the run. A failure of the target itself stops the run either way, and so
+  does a call whose every row was rejected (``AllRowsRejected``).
 - A local regressor: ``OnnxSession.predict_value`` reads the model's first output, one number per row;
   a model with a probability output is a classifier and is refused.
 """
@@ -76,14 +81,45 @@ class RowRefused(EndpointError):
     """The target refused to answer a row."""
 
 
+class AllRowsRejected(EndpointBadResponse):
+    """A non-strict session's target rejected every row of a call: nothing was scored."""
+
+
+#: the run artifact a non-strict session writes when its target rejected rows
+REJECTED_ROWS_ARTIFACT = "rejected-rows.json"
+#: the longest reason ``session.rejected`` keeps for a row
+MAX_REASON = 300
+
+
+class _Rejected(Exception):
+    """One row the target rejected: ``error`` is what a strict session raises, ``reason`` what a
+    non-strict one records."""
+
+    def __init__(self, error: EndpointError, reason: str):
+        super().__init__(reason)
+        self.error, self.reason = error, reason
+
+
 class EndpointSession:
     """A card target's model, reached through its connection (see the module docstring). The session
-    keeps the answers it got: a row (the same values) is sent once, however often it is scored."""
+    keeps the answers it got: a row (the same values) is sent once, however often it is scored.
 
-    def __init__(self, client, outputs: dict):
+    ``strict`` (the default) stops on the first row the target rejects: a refusal, a 4xx answer, an
+    answer without a declared output or with one the session cannot read. Not strict, such a row is
+    ``None`` in the result and is listed in ``rejected`` as (index in that call's rows, reason), and the
+    rejections are saved with the run as ``rejected-rows.json``. A failure of the target itself (its
+    key refused, not found, a timeout, a blocked address, a 5xx answer) stops the run either way, and so
+    does a call whose every row was rejected (``AllRowsRejected``)."""
+
+    def __init__(self, client, outputs: dict, strict: bool = True, plugin=None):
         self.client = client
         self.outputs = check_outputs(outputs)
+        self.strict = bool(strict)
+        self.rejected: list[tuple[int, str]] = []
+        self._plugin = plugin
         self._answered: dict[str, Any] = {}
+        self._rejections: dict[str, _Rejected] = {}
+        self._uploaded: bytes | None = None
         descriptor = getattr(client, "descriptor", None)
         self._secret = getattr(descriptor, "secret", None)
 
@@ -91,64 +127,115 @@ class EndpointSession:
         if self.outputs.get("value"):
             return self.predict_value(rows)
         if not self.outputs.get("label"):
-            return [int(p[1] > p[0]) for p in self.predict_proba(rows)]
-        labels = []
-        for n, answer in self._answers(rows):
-            label = self._output(answer, n, "label")
-            if label is None or isinstance(label, (dict, list)):
-                raise ModelOutputMissing(f"row {n}: the label at {self.outputs['label']!r} is"
-                                         f" {'empty' if label is None else 'not a single value'}")
-            labels.append(label)
-        return labels
+            return [None if p is None else int(p[1] > p[0]) for p in self.predict_proba(rows)]
 
-    def predict_proba(self, rows) -> list[list[float]]:
+        def label(answer, n):
+            value = self._output(answer, n, "label")
+            if value is None or isinstance(value, (dict, list)):
+                raise ModelOutputMissing(f"row {n}: the label at {self.outputs['label']!r} is"
+                                         f" {'empty' if value is None else 'not a single value'}")
+            return value
+
+        return self._score(rows, label)
+
+    def predict_proba(self, rows) -> list[list[float] | None]:
         if not self.outputs.get("probability"):
             raise ValueError("outputs: this model session declares no probability output")
-        proba = []
-        for n, answer in self._answers(rows):
+
+        def proba(answer, n):
             p = self._output(answer, n, "probability")
             if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 <= p <= 1:
                 said = _scrub(str(p), self._secret)[:100]
                 raise ModelOutputMissing(f"row {n}: the probability at {self.outputs['probability']!r} is"
                                          f" not a number from 0 to 1: {said!r}")
-            proba.append([1.0 - float(p), float(p)])
-        return proba
+            return [1.0 - float(p), float(p)]
 
-    def predict_value(self, rows) -> list[float]:
+        return self._score(rows, proba)
+
+    def predict_value(self, rows) -> list[float | None]:
         if not self.outputs.get("value"):
             raise ValueError("outputs: this model session declares no value output")
-        values = []
-        for n, answer in self._answers(rows):
+
+        def value(answer, n):
             v = self._output(answer, n, "value")
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
                 said = _scrub(str(v), self._secret)[:100]
                 raise ModelOutputMissing(f"row {n}: the value at {self.outputs['value']!r} is not a number: {said!r}")
-            values.append(float(v))
-        return values
+            return float(v)
 
-    def _answers(self, rows):
-        """(row number from 1, the answer's value) for each row, in order; a row not answered yet is sent."""
+        return self._score(rows, value)
+
+    def _score(self, rows, read) -> list:
+        """``read(answer, row number from 1)`` for each row, in order; a rejected row raises when strict,
+        else gives None and is listed in ``rejected``."""
         from aisc_plugin_interface.system_under_test import _sent
 
-        for n, row in enumerate(rows, start=1):
+        self.rejected = []
+        rows = list(rows)
+        results, first = [], None
+        for index, row in enumerate(rows):
+            n = index + 1
             try:
                 sent = {k: _sent(v) for k, v in dict(row).items()}
                 key = json.dumps(sent, sort_keys=True, default=str)
-                if key not in self._answered:
-                    self._answered[key] = self.client.ask(sent)
+            except Exception as exc:
+                raise _named(exc, n) from exc
+            try:
+                rejection = self._rejections.get(key)
+                if rejection is None:
+                    try:
+                        results.append(read(self._answer(key, sent, n), n))
+                        continue
+                    except ModelOutputMissing as exc:
+                        rejection = _Rejected(exc, str(exc).removeprefix(f"row {n}: "))
+                raise rejection
+            except _Rejected as rejection:
+                if self.strict:
+                    raise rejection.error from None
+                self._rejections[key] = rejection
+                if first is None:
+                    first = rejection
+                self.rejected.append((index, _scrub(rejection.reason, self._secret)[:MAX_REASON]))
+                results.append(None)
+        if self.rejected:
+            self._save_rejections(len(rows))
+            if len(self.rejected) == len(rows):
+                i, reason = self.rejected[0]
+                raise AllRowsRejected(f"the target rejected all {len(rows)} rows; row {i + 1}: {reason}",
+                                      status=first.error.status)
+        return results
+
+    def _answer(self, key: str, sent: dict, n: int) -> Any:
+        """The answer's value for one row, sent when not answered yet; a row the target rejects raises
+        _Rejected, a failure of the target raises its error naming the row."""
+        if key not in self._answered:
+            try:
+                self._answered[key] = self.client.ask(sent)
+            except EndpointBadResponse as exc:
+                error = type(exc)(f"row {n}: {exc}", status=exc.status)
+                if exc.status is not None and 400 <= exc.status < 500:
+                    raise _Rejected(error, str(exc)) from None
+                raise error from None
             except EndpointError as exc:
                 raise type(exc)(f"row {n}: {exc}", status=exc.status) from None
             except Exception as exc:
-                try:
-                    named = type(exc)(f"row {n}: {exc}")
-                except Exception:
-                    named = RuntimeError(f"row {n}: {type(exc).__name__}: {exc}")
-                raise named from exc
-            answer = self._answered[key]
-            if answer.refused:
-                reason = _scrub(str(answer.refusal_reason), self._secret)
-                raise RowRefused(f"row {n}: the target refused it: {reason}", status=answer.status)
-            yield n, answer.text
+                raise _named(exc, n) from exc
+        answer = self._answered[key]
+        if answer.refused:
+            reason = _scrub(str(answer.refusal_reason), self._secret)
+            raise _Rejected(RowRefused(f"row {n}: the target refused it: {reason}", status=answer.status),
+                            f"the target refused it: {reason}")
+        return answer.text
+
+    def _save_rejections(self, rows_sent: int) -> None:
+        """The last call's rejections as the run artifact, once for the same content."""
+        if self._plugin is None:
+            return
+        content = json.dumps({"rows_sent": rows_sent, "rows_rejected": len(self.rejected),
+                              "rejected": [{"index": i, "reason": r} for i, r in self.rejected]}, indent=2).encode()
+        if content != self._uploaded:
+            self._plugin.upload_artifact(REJECTED_ROWS_ARTIFACT, content)
+            self._uploaded = content
 
     def _output(self, answer, n: int, name: str) -> Any:
         path = self.outputs[name]
@@ -159,10 +246,22 @@ class EndpointSession:
                                      " output)") from None
 
 
+def _named(exc: Exception, n: int) -> Exception:
+    """``exc`` with the row number in front of its message."""
+    try:
+        return type(exc)(f"row {n}: {exc}")
+    except Exception:
+        return RuntimeError(f"row {n}: {type(exc).__name__}: {exc}")
+
+
 class OnnxSession:
     """A local ONNX model (see the module docstring); onnxruntime and numpy are imported when it is made."""
 
+    #: a local model never rejects a row: its errors raise
+    rejected: list[tuple[int, str]] = []
+
     def __init__(self, model):
+        self.rejected = []
         if isinstance(model, (bytes, bytearray)):
             import onnxruntime
 
@@ -296,4 +395,4 @@ def session_for(plugin, outputs: dict | None = None) -> ModelSession:
                   else EndpointClient.for_input(plugin, SYSTEM_INPUT))
     except (EndpointNotFound, BadReference) as exc:
         raise ValueError(f"target: {exc}") from None
-    return EndpointSession(client, outputs)
+    return EndpointSession(client, outputs, strict=getattr(cls, "model_session_strict", True), plugin=plugin)

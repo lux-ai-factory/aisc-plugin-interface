@@ -74,10 +74,11 @@ def inputs_access() -> CardAccess:
     return CardAccess("inputs", lambda cls, required: assesses_inputs()(cls))
 
 
-def model_session(outputs: dict) -> CardAccess:
+def model_session(outputs: dict, strict: bool = True) -> CardAccess:
     """The plugin scores rows with a model: the target answers each row, ``outputs`` says where its
-    answer carries the label and the probability (see ``model_session`` the module, and
-    ``self.assessed_model()``)."""
+    answer carries the label and the probability, or the value (see ``model_session`` the module, and
+    ``self.assessed_model()``). ``strict`` (the default) stops the run on the first row the target
+    rejects; ``strict=False`` skips and counts such rows."""
     outputs = check_outputs(outputs)
 
     def apply(cls, required):
@@ -85,6 +86,7 @@ def model_session(outputs: dict) -> CardAccess:
         cls.target_access = "model_session"
         cls.target_access_required = required
         cls.model_session_outputs = outputs
+        cls.model_session_strict = bool(strict)
         # optional in the form, like the other card accesses' target input; ``required`` is what a run needs
         return evaluation_input(name=SYSTEM_INPUT, label="Target of the assessment (the system, or one of its"
                                 " components)", input_type=InputType.RESOURCE, required=False)(cls)
