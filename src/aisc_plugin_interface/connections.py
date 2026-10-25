@@ -837,7 +837,9 @@ def _run_key_from(answer: Any, name: str) -> RunKey:
     ask_url = aisc.get("ask_url")
     if not isinstance(ask_url, str) or not ask_url:
         raise EndpointError(f"the platform's run key answer for {name!r} has no aisc ask_url")
-    if _origin(ask_url) != _origin(os.environ.get("PLATFORM_URL") or ""):
+    netloc = urllib.parse.urlsplit(ask_url).netloc
+    # a userinfo part (or a backslash some parsers read as a path) can make another host the real one
+    if "@" in netloc or "\\" in netloc or _origin(ask_url) != _origin(os.environ.get("PLATFORM_URL") or ""):
         raise EndpointError(f"the platform's ask URL for {name!r} is not on PLATFORM_URL; the run key is not sent"
                             " there")
     return RunKey(ask_url=ask_url, key=key, capabilities=tuple(answer.get("capabilities") or ("text", "history")),
