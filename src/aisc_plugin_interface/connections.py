@@ -784,7 +784,11 @@ def _issue_run_key(pid: str, path: str, name: str) -> dict:
     try:
         # the opener that follows no redirect: the pass or token goes to the platform and nowhere else
         with _OPENER.open(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            raw = resp.read()
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise RuntimeError(f"the platform's run-key answer was not JSON (connection {name!r})") from None
     except _Redirected as exc:
         raise RuntimeError(f"the platform answered a run key request with a redirect ({exc.code})") from None
     except urllib.error.HTTPError as exc:
