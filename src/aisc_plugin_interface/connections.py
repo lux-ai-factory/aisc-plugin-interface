@@ -31,6 +31,7 @@ Standard library only, so no plugin gains a dependency.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import http.client
 import ipaddress
@@ -587,10 +588,19 @@ def _scrub(text: str, secret: str | None) -> str:
 
 
 def _secrets_of(d: Descriptor) -> list[str]:
-    """The key and every secret header's value, longest first so a value inside another goes with it."""
+    """The key and every secret header's value, each in the forms a system may echo it (the platform's
+    secret_forms): as it is, base64 (standard and URL-safe), URL-encoded (with and without "/" kept, and with
+    "+" for spaces) and JSON-escaped; longest first so a value inside another goes with it. Not taken out:
+    hex, unpadded base64, double encodings, case changes and a secret split across calls."""
     names = {n.lower() for n in (getattr(d, "secret_header_names", None) or [])}
     values = [d.secret] + [str(v) for k, v in (d.headers or {}).items() if k.lower() in names]
-    return sorted({v for v in values if v}, key=len, reverse=True)
+    forms = set()
+    for value in (v for v in values if v):
+        raw = value.encode()
+        forms.update((value, base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode(),
+                      urllib.parse.quote(value, safe=""), urllib.parse.quote(value),
+                      urllib.parse.quote_plus(value), json.dumps(value)[1:-1]))
+    return sorted(forms, key=len, reverse=True)
 
 
 def _scrub_all(text: str, d: Descriptor) -> str:
