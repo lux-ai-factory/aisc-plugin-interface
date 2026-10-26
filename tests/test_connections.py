@@ -375,6 +375,54 @@ def test_a_descriptor_without_secret_headers_is_scrubbed_of_its_key_as_before(st
     assert "s3cr3t" not in str(exc.value)
 
 
+
+# the same forms as the platform's scrub: as it is, base64 (standard and URL-safe) and URL-encoded
+
+def _encoded_forms(value):
+    import base64
+    import urllib.parse
+    raw = value.encode()
+    return {"base64": base64.b64encode(raw).decode(), "url-safe-base64": base64.urlsafe_b64encode(raw).decode(),
+            "url-encoded": urllib.parse.quote(value, safe="")}
+
+
+_ENCODED_TOKEN = "tok/" + "0123456789abcdef" * 2 + "+=&?"
+
+
+@pytest.mark.parametrize("form", ["base64", "url-safe-base64", "url-encoded"])
+def test_an_encoded_key_and_secret_header_value_inside_the_excerpt_are_taken_out(stub, form):
+    key_form = _encoded_forms("s3cr3t-value")[form]
+    token_form = _encoded_forms(_ENCODED_TOKEN)[form]
+    stub.route("/chat", (422, f"bad key {key_form} token {token_form} here".encode()))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        c.call(_secret_header_descriptor(stub, _ENCODED_TOKEN), "q", params={"lang": "en"}, waits=(),
+               allowed_hosts=[stub.host])
+    assert str(exc.value) == "MCAS chat: the system answered 422: bad key *** token *** here"
+
+
+@pytest.mark.parametrize("filler", [240, 250, 260, 270, 280, 290])
+@pytest.mark.parametrize("form", ["base64", "url-safe-base64", "url-encoded"])
+def test_an_encoded_secret_header_value_across_the_excerpts_end_leaves_no_part(stub, form, filler):
+    """The encoded forms are taken out before the cut, like the values: an encoded value echoed across the
+    300th character would otherwise keep its first characters."""
+    token_form = _encoded_forms(_ENCODED_TOKEN)[form]
+    stub.route("/chat", (422, b"A" * filler + token_form.encode() + b" and more"))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        c.call(_secret_header_descriptor(stub, _ENCODED_TOKEN), "q", params={"lang": "en"}, waits=(),
+               allowed_hosts=[stub.host])
+    text = str(exc.value)
+    assert not [p for p in _eight_character_runs(token_form) if p in text], text[-60:]
+
+
+def test_an_encoded_key_across_the_excerpts_end_leaves_no_part(stub):
+    key_form = _encoded_forms("s3cr3t-value")["base64"]
+    stub.route("/chat", (422, "x" * 290 + " " + key_form + " and more"))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        client(stub).ask("q", lang="en")
+    text = str(exc.value)
+    assert not [p for p in _eight_character_runs(key_form) if p in text], text[-60:]
+
+
 def test_a_connection_the_system_drops_is_retried_then_an_endpoint_error(stub, monkeypatch):
     """urllib leaves getresponse() and read() errors unwrapped: a dropped connection is retried and then
     raised as an EndpointError, not as a raw RemoteDisconnected that would abort a whole dataset run."""
