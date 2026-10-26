@@ -170,6 +170,9 @@ class Descriptor:
     protocol_version: str | None = None      # a2a: "1.0" (default) or "0.3"
     #: the assessment target this connection is the endpoint of (key, kind, label, ...)
     target: dict | None = None
+    #: which of ``headers`` carry a secret value: scrubbed from error text like the key; not a stored
+    #: setting, so not in FIELDS, public() or the fingerprint
+    secret_header_names: list = field(default_factory=list, repr=False)
 
     FIELDS = ("name", "label", "kind", "base_url", "method", "path", "headers", "secret_header",
               "body_template", "response_path", "refusal", "model", "timeout_s", "secret", "updated_at",
@@ -583,6 +586,19 @@ def _scrub(text: str, secret: str | None) -> str:
     return text.replace(secret, "***") if secret else text
 
 
+def _secrets_of(d: Descriptor) -> list[str]:
+    """The key and every secret header's value, longest first so a value inside another goes with it."""
+    names = {n.lower() for n in (getattr(d, "secret_header_names", None) or [])}
+    values = [d.secret] + [str(v) for k, v in (d.headers or {}).items() if k.lower() in names]
+    return sorted({v for v in values if v}, key=len, reverse=True)
+
+
+def _scrub_all(text: str, d: Descriptor) -> str:
+    for value in _secrets_of(d):
+        text = text.replace(value, "***")
+    return text
+
+
 def _refusal_of(d: Descriptor, status: int, payload: Any) -> str | None:
     """The refusal reason when (status, payload) is the connection's declared refusal, else None."""
     r = d.refusal or {}
@@ -724,13 +740,13 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                 status, raw = None, b""
             else:
-                raise EndpointError(_scrub(f"{d.label}: {exc.reason}", d.secret)) from None
+                raise EndpointError(_scrub_all(f"{d.label}: {exc.reason}", d)) from None
         except (http.client.HTTPException, ConnectionError) as exc:
             # urllib leaves getresponse() and read() errors unwrapped: a connection the system dropped
             # is retried like a timeout, then an EndpointError
             if not waits:
-                raise EndpointError(_scrub(f"{d.label}: the connection was dropped ({type(exc).__name__})",
-                                           d.secret)) from None
+                raise EndpointError(_scrub_all(f"{d.label}: the connection was dropped ({type(exc).__name__})",
+                                               d)) from None
             sleep(waits.pop(0))
             continue
         latency = int((time.monotonic() - started) * 1000)
@@ -749,9 +765,9 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if status == 404:
                 raise EndpointNotFound(f"{d.label}: nothing at {urllib.parse.urlsplit(url).path} (404)", status=404)
             if 400 <= status < 500:
-                # the system's own reason, a short excerpt with the key taken out (before the cut, so a key
-                # across it goes too): without it a 422 is a guess
-                said = _scrub((raw or b"").decode("utf-8", errors="replace"), d.secret)[:300]
+                # the system's own reason, a short excerpt with the key and every secret header value taken
+                # out (before the cut, so a secret across it goes too): without it a 422 is a guess
+                said = _scrub_all((raw or b"").decode("utf-8", errors="replace"), d)[:300]
                 raise EndpointBadResponse(f"{d.label}: the system answered {status}: {said}", status=status)
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
