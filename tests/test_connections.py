@@ -332,6 +332,49 @@ def test_a_key_across_the_excerpts_end_is_still_taken_out(stub):
     assert "s3cr3t" not in str(exc.value)
 
 
+def _secret_header_descriptor(stub, token):
+    """A descriptor as the platform builds it to call a system: a secret header's value is among its
+    headers, and secret_header_names says which headers are secret."""
+    d = desc(stub, headers={"X-Client": "aisc", "X-Token": token})
+    d.secret_header_names = ["X-Token"]
+    return d
+
+
+def _eight_character_runs(value):
+    return [value[i:i + 8] for i in range(len(value) - 7)]
+
+
+def test_a_secret_header_value_across_the_excerpts_end_is_taken_out(stub):
+    """Every secret value is taken out before the cut, not only the key: a secret header value echoed
+    across the 300th character would otherwise keep its first characters."""
+    token = "tok-" + "0123456789abcdef" * 4
+    stub.route("/chat", (422, b"A" * 250 + token.encode() + b" and more"))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        c.call(_secret_header_descriptor(stub, token), "q", params={"lang": "en"}, waits=(),
+               allowed_hosts=[stub.host])
+    text = str(exc.value)
+    assert not [p for p in _eight_character_runs(token) if p in text], text[-60:]
+    assert text.endswith("A" * 40 + "*** and more"), text[-60:]
+
+
+def test_a_secret_header_value_inside_the_excerpt_is_taken_out(stub):
+    token = "tok-" + "fedcba9876543210" * 2
+    stub.route("/chat", (422, f"bad X-Token {token} for s3cr3t-value".encode()))
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        c.call(_secret_header_descriptor(stub, token), "q", params={"lang": "en"}, waits=(),
+               allowed_hosts=[stub.host])
+    assert str(exc.value) == "MCAS chat: the system answered 422: bad X-Token *** for ***"
+
+
+def test_a_descriptor_without_secret_headers_is_scrubbed_of_its_key_as_before(stub):
+    stub.route("/chat", (422, "x" * 290 + " s3cr3t-value and more"))
+    d = desc(stub)
+    assert getattr(d, "secret_header_names", None) in (None, [], ())
+    with pytest.raises(c.EndpointBadResponse) as exc:
+        c.call(d, "q", params={"lang": "en"}, waits=(), allowed_hosts=[stub.host])
+    assert "s3cr3t" not in str(exc.value)
+
+
 def test_a_connection_the_system_drops_is_retried_then_an_endpoint_error(stub, monkeypatch):
     """urllib leaves getresponse() and read() errors unwrapped: a dropped connection is retried and then
     raised as an EndpointError, not as a raw RemoteDisconnected that would abort a whole dataset run."""
