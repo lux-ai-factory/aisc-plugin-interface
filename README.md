@@ -64,12 +64,12 @@ uv add aisc-plugin-interface        # or: pip install aisc-plugin-interface
 
 This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
 `system_under_test`, `targets`, `assesses`, `helpers` or `model_session`, which exist only on the
-`feat/unified-modules` branch that the AISC stack uses. A plugin that needs them pins
+`pilot` branch that the AISC stack uses. A plugin that needs them pins
 `aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi) or from git,
 never from PyPI until 0.4.0 is released there:
 
 ```bash
-uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch feat/unified-modules
+uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch pilot
 ```
 
 A plugin's evaluation run installs the plugin and its dependencies into a fresh environment, from
@@ -179,7 +179,7 @@ PLUGIN_DEVELOPER_GUIDE.md    how to write a plugin
 
 ## Contributing
 
-`feat/unified-modules` is the branch the AISC stack uses and the only one to work on. See
+`pilot` is the branch the AISC stack uses and the only one to work on. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor licence terms.
 
 ## License

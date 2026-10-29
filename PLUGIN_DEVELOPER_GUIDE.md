@@ -81,10 +81,10 @@ uv run aisc-plugin-interface init-plugin
 This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
 `system_under_test`, `targets`, `assesses`, `helpers` or `model_session` (section 13). A plugin that
 needs them pins `aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi)
-or from git (`--branch feat/unified-modules`), never from PyPI until 0.4.0 is released there:
+or from git (`--branch pilot`), never from PyPI until 0.4.0 is released there:
 
 ```bash
-uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch feat/unified-modules
+uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch pilot
 ```
 
 To try the plugin in a running AISC stack, put the project folder in the stack's plugin folder.
@@ -361,7 +361,7 @@ assert [m.name for m in plugin.export_metrics(output)] == ["Average score", "Pas
 
 ## 13. What a plugin assesses, and the models that help it
 
-This section needs the `feat/unified-modules` version of the library (see section 4), from version 0.2.9.
+This section needs the `pilot` version of the library (see section 4), from version 0.2.9.
 
 Two kinds of model meet in a plugin, and the library keeps them apart:
 
