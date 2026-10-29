@@ -152,7 +152,7 @@ def test_the_endpoint_builder_points_the_tool_at_the_platform(platform):
 
     t = bound(Live, f"connection:{PID}/mcas-chat")
     assert t.evaluate({}) == "done" and t.seen == f"{ROOT}/openai/v1"
-    assert target_access_of(Live) == "endpoint" and Live.system_under_test_needs == ("history",)
+    assert target_access_of(Live) == "endpoint"
 
 
 def test_with_a_local_model_too_the_card_access_is_optional():
@@ -167,7 +167,7 @@ def test_with_a_local_model_too_the_card_access_is_optional():
         pass
 
     assert bound(Live).evaluate({}) == "done" and bound(Tables).evaluate({}) == "done"
-    assert Live.target_access_required is False and Tables.dataset_through_target_required is False
+    assert Live.target_access_required is False and Tables.target_access_required is False
 
 
 def test_the_dataset_builder_alone_is_required():
@@ -175,7 +175,7 @@ def test_the_dataset_builder_alone_is_required():
     class Tables(Base):
         pass
 
-    assert Tables.dataset_through_target_inputs == ("rows",) and Tables.dataset_through_target_required is True
+    assert Tables.target_access_required is True
     with pytest.raises(ValueError, match="no target"):
         bound(Tables).evaluate({})
 
@@ -373,8 +373,6 @@ def test_a_card_access_can_be_optional():
     assert target_kinds_of(Tables) == ("card",)
     assert Tables.card_access == "dataset_through_target"
     assert Tables.target_access_required is False
-    assert Tables.dataset_through_target_required is False
-    assert Tables.dataset_through_target_inputs == ("a", "b")
     assert Tables.card_access_required is False
     assert card_needs_connection(Tables) is False
 
@@ -434,7 +432,7 @@ def test_optional_with_a_local_model_too_needs_no_connection():
         pass
 
     assert target_kinds_of(Tables) == ("card", "local_model")
-    assert Tables.dataset_through_target_required is False
+    assert Tables.target_access_required is False
     assert card_needs_connection(Tables) is False
 
 
@@ -469,6 +467,19 @@ def test_the_optional_builder_declares_what_the_old_optional_decorator_declares(
 
     for read in (target_kinds_of, card_needs_connection, card_protocols_of, target_access_of):
         assert read(Old) == read(New), read.__name__
-    for attribute in ("target_access_required", "dataset_through_target_required", "dataset_through_target_inputs"):
-        assert getattr(Old, attribute) == getattr(New, attribute), attribute
+    assert Old.target_access_required == New.target_access_required
     assert [d.name for d in Old().input_definitions] == [d.name for d in New().input_definitions]
+
+
+def test_the_declarations_keep_no_copy_of_their_arguments_that_nothing_reads():
+    @system_under_test(protocols=("openai",), env=ENV, needs=("history",))
+    class Live(Base):
+        pass
+
+    @dataset_through_target(datasets=("rows",))
+    class Tables(Base):
+        pass
+
+    assert not hasattr(Live, "system_under_test_needs")
+    for attribute in ("dataset_through_target_inputs", "dataset_through_target_required"):
+        assert not hasattr(Tables, attribute), attribute

@@ -125,7 +125,6 @@ def system_under_test(protocols: tuple[str, ...] | list[str], fields: dict[str, 
         _one_declaration(cls, "endpoint")
         cls.target_access = "endpoint"
         cls.target_access_required = required
-        cls.system_under_test_needs = needs
         # The input is declared optional so that a standalone form without targets is not blocked;
         # inside the Configurator the engine makes every evaluation's target required.
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
@@ -227,8 +226,6 @@ def dataset_through_target(datasets: tuple[str, ...] | list[str], input_name: st
     def decorator(cls):
         _one_declaration(cls, "dataset_through_target")
         cls.target_access = "dataset_through_target"
-        cls.dataset_through_target_inputs = datasets
-        cls.dataset_through_target_required = required
         cls.target_access_required = required
         cls = evaluation_input(name=input_name, label=label, input_type=InputType.RESOURCE, required=False)(cls)
         original = cls.evaluate

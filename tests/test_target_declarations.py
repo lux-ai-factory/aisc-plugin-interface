@@ -106,7 +106,6 @@ def test_what_is_carried_runs(stub, monkeypatch):
 
     t = run(Chat, {"key": "k", "endpoints": ENDPOINTS, "connection": "mcas-chat"}, stub, monkeypatch)
     assert t.evaluate({}) == "done" and t.ran["env"] == f"{ROOT}/openai/v1"
-    assert Chat.system_under_test_needs == ("history",)
 
 
 def test_each_declaration_records_whether_its_target_access_is_required():
