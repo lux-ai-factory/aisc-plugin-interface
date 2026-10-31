@@ -799,7 +799,8 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
 
 def _issue_run_key(pid: str, path: str, name: str) -> dict:
     """Ask the platform for a run key; ``path`` is ``targets/<key>``, or ``connections/<name>`` for a
-    connection bound directly. When the platform refuses, its reason is passed on."""
+    connection bound directly. When the platform refuses, its reason is passed on. The answer is checked
+    before it is returned (see ``_checked_run_key``): the key goes to every endpoint it names."""
     base = (os.environ.get("PLATFORM_URL") or "").rstrip("/")
     auth = platform_auth()
     if not base or auth is None:
@@ -812,9 +813,9 @@ def _issue_run_key(pid: str, path: str, name: str) -> dict:
         with _OPENER.open(req, timeout=30) as resp:
             raw = resp.read()
         try:
-            return json.loads(raw)
+            answer = json.loads(raw)
         except ValueError:
-            raise RuntimeError(f"the platform's run-key answer was not JSON (connection {name!r})") from None
+            raise EndpointBadResponse(f"the platform's run-key answer was not JSON (connection {name!r})") from None
     except _Redirected as exc:
         raise RuntimeError(f"the platform answered a run key request with a redirect ({exc.code})") from None
     except urllib.error.HTTPError as exc:
@@ -829,6 +830,45 @@ def _issue_run_key(pid: str, path: str, name: str) -> dict:
         raise error(f"the platform refused a run key for {name!r}{reason}") from None
     except (urllib.error.URLError, TimeoutError):
         raise RuntimeError(f"the platform could not be reached for connection {name!r}") from None
+    return _checked_run_key(answer, name)
+
+
+#: the roles of a run key answer's endpoints that are URLs: the key is sent to each of them
+_URL_ROLES = ("ask_url", "base_url", "rpc_url", "agent_card_url")
+
+
+def _checked_run_key(answer: Any, name: str) -> dict:
+    """The platform's run-keys answer, once it is a JSON object with a key and every endpoint URL it
+    carries is on PLATFORM_URL's origin: a tool sends the key to whichever of them it is pointed at."""
+    if not isinstance(answer, dict):
+        raise EndpointBadResponse(f"the platform's run key answer for {name!r} is not a JSON object")
+    key = answer.get("key")
+    if not isinstance(key, str) or not key:
+        raise EndpointBadResponse(f"the platform's run key answer for {name!r} has no key")
+    endpoints = answer.get("endpoints") or {}
+    if not isinstance(endpoints, dict) or not all(isinstance(e, dict) for e in endpoints.values()):
+        raise EndpointBadResponse(f"the platform's run key answer for {name!r} has endpoints that are not objects")
+    platform = os.environ.get("PLATFORM_URL") or ""
+    for protocol, endpoint in endpoints.items():
+        for role in _URL_ROLES:
+            if endpoint.get(role) is not None and not _on_platform(endpoint[role], platform):
+                raise BlockedAddress(f"the platform's {protocol} {role} for {name!r} is not on PLATFORM_URL;"
+                                     " the run key is not sent there")
+    return answer
+
+
+def _on_platform(url: Any, platform: str) -> bool:
+    """Whether ``url`` is on the origin of ``platform`` and reads the same to every parser."""
+    # only plain printable ASCII: no lookalike, whitespace or control character the check and the request
+    # could read differently
+    if not isinstance(url, str) or not url or not all("!" <= c <= "~" for c in url):
+        return False
+    try:
+        netloc = urllib.parse.urlsplit(url).netloc
+        # a userinfo part (or a backslash some parsers read as a path) can make another host the real one
+        return "@" not in netloc and "\\" not in netloc and _origin(url) == _origin(platform)
+    except ValueError:  # a URL the parser cannot read (a lookalike at sign, an unclosed bracket) is not trusted
+        return False
 
 
 @dataclass(frozen=True)
@@ -856,31 +896,13 @@ def _origin(url: str) -> tuple[str, str, int]:
     return scheme, (parts.hostname or "").lower(), port or (443 if scheme == "https" else 80)
 
 
-def _run_key_from(answer: Any, name: str) -> RunKey:
-    """The run key of the platform's run-keys answer, checked before anything is sent with it."""
-    answer = answer if isinstance(answer, dict) else {}
-    key = answer.get("key")
-    if not isinstance(key, str) or not key:
-        raise EndpointError(f"the platform's run key answer for {name!r} has no key")
-    endpoints = answer.get("endpoints") if isinstance(answer.get("endpoints"), dict) else {}
-    aisc = endpoints.get("aisc") if isinstance(endpoints.get("aisc"), dict) else {}
-    ask_url = aisc.get("ask_url")
-    if not isinstance(ask_url, str) or not ask_url:
-        raise EndpointError(f"the platform's run key answer for {name!r} has no aisc ask_url")
-    # only plain printable ASCII: no lookalike, whitespace or control character the check and the request
-    # could read differently
-    plain = all("!" <= c <= "~" for c in ask_url)
-    try:
-        netloc = urllib.parse.urlsplit(ask_url).netloc
-        # a userinfo part (or a backslash some parsers read as a path) can make another host the real one
-        on_platform = (plain and "@" not in netloc and "\\" not in netloc
-                       and _origin(ask_url) == _origin(os.environ.get("PLATFORM_URL") or ""))
-    except ValueError:  # a URL the parser cannot read (a lookalike at sign, an unclosed bracket) is not trusted
-        on_platform = False
-    if not on_platform:
-        raise EndpointError(f"the platform's ask URL for {name!r} is not on PLATFORM_URL; the run key is not sent"
-                            " there")
-    return RunKey(ask_url=ask_url, key=key, capabilities=tuple(answer.get("capabilities") or ("text", "history")),
+def _run_key_from(answer: dict, name: str) -> RunKey:
+    """The run key of a checked run-keys answer (``_issue_run_key``), with the platform's ask URL."""
+    ask_url = ((answer.get("endpoints") or {}).get("aisc") or {}).get("ask_url")
+    if not ask_url:
+        raise EndpointBadResponse(f"the platform's run key answer for {name!r} has no aisc ask_url")
+    return RunKey(ask_url=ask_url, key=answer["key"],
+                  capabilities=tuple(answer.get("capabilities") or ("text", "history")),
                   expires_at=answer.get("expires_at"))
 
 
@@ -945,6 +967,10 @@ class EndpointClient:
             raise EndpointError(f"the platform refused to resolve connection {name!r} ({exc.code})") from None
         except (urllib.error.URLError, TimeoutError, _Redirected):
             raise EndpointError(f"the platform could not be reached to resolve connection {name!r}") from None
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            raise EndpointBadResponse(f"the platform's answer resolving connection {name!r} was not a JSON object")
         # The network rule is the platform's, per project: the internal hosts this connection may
         # reach and the addresses it never may. The run's own environment opens nothing.
         allowed, denied = list(data.get("allowed_hosts") or []), list(data.get("denied_addresses") or [])
@@ -957,6 +983,8 @@ class EndpointClient:
             issued = _issue_run_key(pid, run_key_path, descriptor.name)
         except NoEndpoint as exc:
             raise TargetHasNoEndpoint(str(exc)) from None
+        except EndpointError:
+            raise
         except RuntimeError as exc:
             raise EndpointError(str(exc)) from None
         return cls(descriptor, plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,

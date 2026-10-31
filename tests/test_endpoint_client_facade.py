@@ -476,6 +476,22 @@ def test_the_changelog_security_entry_says_ask_urls_not_plain_ascii_are_refused(
     assert "cannot read" in security, security
 
 
+@pytest.mark.parametrize("body", [b"not json", b"<html>gateway</html>", b"", b"[]", b'"mcas-score"'])
+def test_a_resolve_answer_that_is_not_a_json_object_is_an_endpoint_error(facade, body):
+    facade.route(RESOLVE, (200, body))
+    with pytest.raises(EndpointBadResponse, match=f"resolving connection {KEY!r} was not a JSON object"):
+        client()
+    assert [r["path"] for r in facade.seen] == [RESOLVE]
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"aisc-run-abc"', b"null"])
+def test_a_run_key_answer_that_is_not_a_json_object_is_a_bad_response(facade, body):
+    facade.route(RUN_KEYS, (201, body))
+    with pytest.raises(EndpointBadResponse, match="run key answer for 'mcas-score' is not a JSON object"):
+        client()
+    assert asks(facade) == []
+
+
 @pytest.mark.parametrize("body", [b"not json", b"<html>gateway</html>", b""])
 def test_a_run_key_answer_that_is_not_json_is_an_endpoint_error(facade, body):
     facade.route(RUN_KEYS, (201, body))

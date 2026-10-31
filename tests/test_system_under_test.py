@@ -10,17 +10,27 @@ from aisc_plugin_interface import BaseEvaluationPlugin, InputType
 from aisc_plugin_interface.system_under_test import SYSTEM_INPUT, system_under_test
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
-ROOT = f"http://platform:8000/internal/facade/{PID}/mcas-chat"
-ISSUED = {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00", "endpoints": {
-    "aisc": {"ask_url": f"{ROOT}/aisc/ask"},
-    "openai": {"base_url": f"{ROOT}/openai/v1", "model": "mcas-chat"},
-    "a2a": {"agent_card_url": f"{ROOT}/a2a/.well-known/agent-card.json", "rpc_url": f"{ROOT}/a2a"},
-    "oip": {"base_url": f"{ROOT}/oip", "model": "mcas-chat"}}}
+FACADE = f"/internal/facade/{PID}/mcas-chat"
+RUN_KEYS = f"/internal/projects/{PID}/connections/mcas-chat/run-keys"
+
+
+def issued(platform_url):
+    """The platform's run key answer: every endpoint on the platform's own origin."""
+    root = platform_url + FACADE
+    return {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00", "endpoints": {
+        "aisc": {"ask_url": f"{root}/aisc/ask"},
+        "openai": {"base_url": f"{root}/openai/v1", "model": "mcas-chat"},
+        "a2a": {"agent_card_url": f"{root}/a2a/.well-known/agent-card.json", "rpc_url": f"{root}/a2a"},
+        "oip": {"base_url": f"{root}/oip", "model": "mcas-chat"}}}
+
+
+ROOT = "http://platform:8000" + FACADE
+ISSUED = issued("http://platform:8000")
 
 
 @pytest.fixture
 def platform(stub, monkeypatch):
-    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (201, ISSUED))
+    stub.route(RUN_KEYS, (201, issued(stub.base)))
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     return stub
@@ -81,7 +91,8 @@ def test_fills_the_declared_fields_for_the_first_protocol(platform):
     t = bound(make(protocols=("openai",), fields={"target.base_url": "base_url", "target.api_key": "api_key",
                                                    "target.model": "model"}))
     assert t.evaluate({"target": {"temperature": 0}, "other": 1}) == "done"
-    assert t.seen["config"] == {"target": {"temperature": 0, "base_url": f"{ROOT}/openai/v1", "api_key": "aisc-run-abc",
+    root = platform.base + FACADE
+    assert t.seen["config"] == {"target": {"temperature": 0, "base_url": f"{root}/openai/v1", "api_key": "aisc-run-abc",
                                            "model": "mcas-chat"}, "other": 1}
 
 
@@ -97,7 +108,8 @@ def test_issues_the_key_with_the_service_token(platform):
     t.evaluate({})
     (req,) = [r for r in platform.seen if r["path"].endswith("/run-keys")]
     assert req["method"] == "POST" and req["headers"]["x-aisc-service-token"] == "svc-token"
-    assert t.seen["config"] == {"card": f"{ROOT}/a2a/.well-known/agent-card.json", "rpc": f"{ROOT}/a2a", "key": "aisc-run-abc"}
+    root = platform.base + FACADE
+    assert t.seen["config"] == {"card": f"{root}/a2a/.well-known/agent-card.json", "rpc": f"{root}/a2a", "key": "aisc-run-abc"}
 
 
 def test_issues_the_key_with_the_run_pass_when_the_run_has_one(platform, monkeypatch):
@@ -121,7 +133,7 @@ def test_sets_the_declared_env_for_the_run_only(platform, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     t = bound(make(protocols=("openai",), env={"OPENAI_BASE_URL": "base_url", "OPENAI_API_KEY": "api_key"}))
     t.evaluate({})
-    assert t.seen["env"] == {"OPENAI_BASE_URL": f"{ROOT}/openai/v1", "OPENAI_API_KEY": "aisc-run-abc"}
+    assert t.seen["env"] == {"OPENAI_BASE_URL": f"{platform.base}{FACADE}/openai/v1", "OPENAI_API_KEY": "aisc-run-abc"}
     assert os.environ["OPENAI_BASE_URL"] == "https://api.openai.com/v1" and "OPENAI_API_KEY" not in os.environ
 
 
@@ -143,7 +155,7 @@ def test_records_what_the_run_was_pointed_at_without_the_key(platform):
     t.evaluate({})
     doc = json.loads(t.artifacts["connection-mcas-chat.json"])
     assert doc["connection"] == f"connection:{PID}/mcas-chat" and doc["protocol"] == "oip"
-    assert doc["endpoint"] == {"base_url": f"{ROOT}/oip", "model": "mcas-chat"} and doc["expires_at"]
+    assert doc["endpoint"] == {"base_url": f"{platform.base}{FACADE}/oip", "model": "mcas-chat"} and doc["expires_at"]
     assert "aisc-run-abc" not in json.dumps(doc)
 
 
@@ -163,13 +175,29 @@ def test_a_required_input_left_unbound_stops_the_run(platform):
 
 
 def test_a_refused_key_stops_the_run_before_the_tool(stub, monkeypatch):
-    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (404, {"detail": "no connection"}))
+    stub.route(RUN_KEYS, (404, {"detail": "no connection"}))
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     t = bound(make(protocols=("openai",), fields={"base": "base_url"}))
     with pytest.raises(RuntimeError, match="mcas-chat"):
         t.evaluate({})
     assert not hasattr(t, "seen")
+
+
+@pytest.mark.parametrize("base_url", ["http://evil.example/v1", "http://evil.example@{host}/v1"])
+def test_a_run_key_answer_with_an_endpoint_off_the_platform_stops_the_run(platform, base_url):
+    """The tool sends the run key to the endpoint it is pointed at, so every endpoint the answer carries
+    is on PLATFORM_URL, not only the one this tool's protocol uses."""
+    from aisc_plugin_interface.connections import EndpointError
+
+    answer = issued(platform.base)
+    answer["endpoints"]["openai"]["base_url"] = base_url.format(host=platform.host)
+    platform.route(RUN_KEYS, (201, answer))
+    for protocol, fields in (("openai", {"base": "base_url"}), ("oip", {"base": "base_url"})):
+        t = bound(make(protocols=(protocol,), fields=fields))
+        with pytest.raises(EndpointError, match="openai base_url for 'mcas-chat' is not on PLATFORM_URL"):
+            t.evaluate({})
+        assert not hasattr(t, "seen")
 
 
 def test_without_the_platform_settings_the_run_stops_clearly(monkeypatch):

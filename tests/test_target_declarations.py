@@ -12,8 +12,13 @@ from aisc_plugin_interface.system_under_test import (SYSTEM_INPUT, assesses_inpu
                                                      system_under_test, target_access_of)
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
-ROOT = f"http://platform:8000/internal/facade/{PID}/mcas-chat"
-ENDPOINTS = {"openai": {"base_url": f"{ROOT}/openai/v1", "model": "mcas-chat"}, "aisc": {"ask_url": f"{ROOT}/aisc/ask"}}
+FACADE = f"/internal/facade/{PID}/mcas-chat"
+
+
+def endpoints(platform_url):
+    """The endpoints of the platform's run key answer, on the platform's own origin."""
+    root = platform_url + FACADE
+    return {"openai": {"base_url": f"{root}/openai/v1", "model": "mcas-chat"}, "aisc": {"ask_url": f"{root}/aisc/ask"}}
 
 
 class Base(BaseEvaluationPlugin):
@@ -81,7 +86,7 @@ def test_a_need_the_endpoint_does_not_carry_refuses_the_run_before_it_starts(stu
     class Agent(Base):
         pass
 
-    t = run(Agent, {"key": "k", "endpoints": ENDPOINTS, "connection": "mcas-chat",
+    t = run(Agent, {"key": "k", "endpoints": endpoints(stub.base), "connection": "mcas-chat",
                     "capabilities": ["text", "history"]}, stub, monkeypatch)
     with pytest.raises(ValueError) as exc:
         t.evaluate({})
@@ -94,7 +99,7 @@ def test_without_a_capability_list_the_endpoint_carries_text_and_history_only(st
     class Scorer(Base):
         pass
 
-    t = run(Scorer, {"key": "k", "endpoints": ENDPOINTS, "connection": "mcas-chat"}, stub, monkeypatch)
+    t = run(Scorer, {"key": "k", "endpoints": endpoints(stub.base), "connection": "mcas-chat"}, stub, monkeypatch)
     with pytest.raises(ValueError):
         t.evaluate({})
 
@@ -104,8 +109,8 @@ def test_what_is_carried_runs(stub, monkeypatch):
     class Chat(Base):
         pass
 
-    t = run(Chat, {"key": "k", "endpoints": ENDPOINTS, "connection": "mcas-chat"}, stub, monkeypatch)
-    assert t.evaluate({}) == "done" and t.ran["env"] == f"{ROOT}/openai/v1"
+    t = run(Chat, {"key": "k", "endpoints": endpoints(stub.base), "connection": "mcas-chat"}, stub, monkeypatch)
+    assert t.evaluate({}) == "done" and t.ran["env"] == f"{stub.base}{FACADE}/openai/v1"
 
 
 def test_each_declaration_records_whether_its_target_access_is_required():

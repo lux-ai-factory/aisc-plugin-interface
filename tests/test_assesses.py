@@ -25,9 +25,15 @@ from aisc_plugin_interface.system_under_test import (SYSTEM_INPUT, assesses_inpu
                                                      system_under_test, target_access_of)
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
-ROOT = f"http://platform:8000/internal/facade/{PID}/mcas-chat"
-ISSUED = {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00",
-          "endpoints": {"openai": {"base_url": f"{ROOT}/openai/v1", "model": "mcas-chat"}}}
+FACADE = f"/internal/facade/{PID}/mcas-chat"
+
+
+def issued(platform_url):
+    """The platform's run key answer: its endpoint on the platform's own origin."""
+    return {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00",
+            "endpoints": {"openai": {"base_url": f"{platform_url}{FACADE}/openai/v1", "model": "mcas-chat"}}}
+
+
 ENV = {"OPENAI_BASE_URL": "base_url"}
 
 
@@ -55,7 +61,7 @@ def bound(cls, value=None):
 
 @pytest.fixture
 def platform(stub, monkeypatch):
-    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (201, ISSUED))
+    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (201, issued(stub.base)))
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     return stub
@@ -151,7 +157,7 @@ def test_the_endpoint_builder_points_the_tool_at_the_platform(platform):
         pass
 
     t = bound(Live, f"connection:{PID}/mcas-chat")
-    assert t.evaluate({}) == "done" and t.seen == f"{ROOT}/openai/v1"
+    assert t.evaluate({}) == "done" and t.seen == f"{platform.base}{FACADE}/openai/v1"
     assert target_access_of(Live) == "endpoint"
 
 

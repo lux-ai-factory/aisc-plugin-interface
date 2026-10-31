@@ -13,10 +13,15 @@ from aisc_plugin_interface.targets import TARGET_INPUT, parse_target, target_of
 
 PID = "0f7c1e2a-aaaa-bbbb-cccc-1234567890ab"
 KEY = "component:0b9c7a1e-0000-4000-8000-000000000001"
-ROOT = f"http://platform:8000/internal/facade/{PID}/mcas-scorer"
+FACADE = f"/internal/facade/{PID}/mcas-scorer"
 TARGET = {"key": KEY, "kind": "component", "component_kind": "model", "label": "Scoring model", "last_card_number": 2}
-ISSUED = {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00", "connection": "mcas-scorer",
-          "target": TARGET, "endpoints": {"openai": {"base_url": f"{ROOT}/openai/v1", "model": "mcas-scorer"}}}
+
+
+def issued(platform_url):
+    """The platform's run key answer: its endpoint on the platform's own origin."""
+    return {"key": "aisc-run-abc", "expires_at": "2026-09-30T00:00:00+00:00", "connection": "mcas-scorer",
+            "target": TARGET,
+            "endpoints": {"openai": {"base_url": f"{platform_url}{FACADE}/openai/v1", "model": "mcas-scorer"}}}
 
 
 def test_the_input_is_named_target_and_its_value_names_project_and_key():
@@ -35,7 +40,7 @@ def test_target_of_a_plugin(plugin):
 
 @pytest.fixture
 def platform(stub, monkeypatch):
-    stub.route(f"/internal/projects/{PID}/targets/{KEY}/run-keys", (201, ISSUED))
+    stub.route(f"/internal/projects/{PID}/targets/{KEY}/run-keys", (201, issued(stub.base)))
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     return stub
@@ -63,7 +68,7 @@ def test_the_decorator_declares_target_and_reaches_the_targets_endpoint(platform
     assert [d.name for d in Tool().input_definitions] == ["target"]
     t = bound(Tool, f"target:{PID}/{KEY}")
     assert t.evaluate({}) == "done"
-    assert t.seen["target"] == {"base_url": f"{ROOT}/openai/v1", "api_key": "aisc-run-abc"}
+    assert t.seen["target"] == {"base_url": f"{platform.base}{FACADE}/openai/v1", "api_key": "aisc-run-abc"}
     (req,) = [r for r in platform.seen if r["path"].endswith("/run-keys")]
     assert req["path"] == f"/internal/projects/{PID}/targets/{KEY}/run-keys"
 
@@ -88,7 +93,7 @@ def test_the_record_says_what_was_assessed_and_what_was_called(platform):
 
 
 def test_a_legacy_connection_value_still_works(stub, monkeypatch):
-    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (201, {**ISSUED, "connection": "mcas-chat"}))
+    stub.route(f"/internal/projects/{PID}/connections/mcas-chat/run-keys", (201, {**issued(stub.base), "connection": "mcas-chat"}))
     monkeypatch.setenv("PLATFORM_URL", stub.base)
     monkeypatch.setenv("PLATFORM_CONNECTIONS_TOKEN", "svc-token")
     t = bound(tool(), f"connection:{PID}/mcas-chat")
