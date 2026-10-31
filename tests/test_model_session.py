@@ -2,6 +2,7 @@
 predict(rows) and predict_proba(rows), whether the model is a local ONNX file uploaded to the project
 or an AI card target reached through its connection. The plugin never asks where the model lives."""
 import json
+import math
 
 import pytest
 
@@ -358,6 +359,49 @@ def test_a_local_session_ignores_per_run_answer_paths_but_still_validates_them(o
     assert isinstance(plugin.assessed_model(outputs={"label": "verdict"}), OnnxSession)
     with pytest.raises(ValueError, match="colour"):
         plugin.assessed_model(outputs={"label": "verdict", "colour": "c"})
+
+
+# the probability shapes a local model can give, read through a stand-in for the onnxruntime session
+
+
+class Port:
+    def __init__(self, name, type="tensor(float)"):
+        self.name, self.type = name, type
+
+
+class FakeOnnxRuntime:
+    """Answers every run with ``label`` and the given ``probabilities`` output, whatever the rows."""
+
+    def __init__(self, probabilities):
+        self.probabilities = probabilities
+
+    def get_inputs(self):
+        return [Port("features")]
+
+    def get_outputs(self):
+        return [Port("label", "tensor(int64)"), Port("probabilities")]
+
+    def run(self, names, feeds):
+        return [[0] * len(feeds["features"]), self.probabilities]
+
+
+TWO_ROWS = [{"a": 1.0}, {"a": 2.0}]
+
+
+@pytest.mark.parametrize("probabilities, want", [
+    ([{1: 0.2, 0: 0.8}, {0: 0.3, 1: 0.7}], [[0.8, 0.2], [0.3, 0.7]]),
+    ([0.25, 0.9], [[0.75, 0.25], [0.1, 0.9]]),
+    ([[0.25], [0.9]], [[0.75, 0.25], [0.1, 0.9]]),
+    ([[0.0, 0.0], [1.0, 1.0 + math.log(3)]], [[0.5, 0.5], [0.25, 0.75]]),
+    ([[0.6, 0.4], [0.1, 0.9]], [[0.6, 0.4], [0.1, 0.9]]),
+], ids=["zipmap", "one-number-per-row", "one-column", "logits-through-softmax",
+        "already-probabilities"])
+def test_every_probability_shape_becomes_two_probabilities_per_row(probabilities, want):
+    pytest.importorskip("numpy", reason="the local model session reads its outputs with numpy")
+    model = OnnxSession(FakeOnnxRuntime(probabilities))
+    proba = model.predict_proba(TWO_ROWS)
+    assert proba == [pytest.approx(w, abs=1e-6) for w in want]
+    assert model.predict(TWO_ROWS) == [max((0, 1), key=lambda j: w[j]) for w in want]
 
 
 # a regression's number: the value output

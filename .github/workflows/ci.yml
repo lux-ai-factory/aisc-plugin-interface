@@ -14,4 +14,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv run --with pytest --with pandas python -m pytest -q -p no:cacheprovider
+      - run: uv run --with pytest --with pandas --with onnx --with onnxruntime python -m pytest -q -p no:cacheprovider
