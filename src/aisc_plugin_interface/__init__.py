@@ -39,6 +39,7 @@ from aisc_plugin_interface.assesses import (
     target_kinds_of,
     card_protocols_of,
     card_needs_connection,
+    describe,
 )
 from aisc_plugin_interface.helpers import (
     helper_model,
@@ -85,6 +86,7 @@ __all__ = [
     "target_kinds_of",
     "card_protocols_of",
     "card_needs_connection",
+    "describe",
     "helper_model",
     "HELPER_ROLES",
     "helper_roles_of",

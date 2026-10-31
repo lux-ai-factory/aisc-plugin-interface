@@ -19,17 +19,19 @@ access optional on its own: a run with no card target, or with a card target tha
 with ``required=False``. Any other failure to reach the platform still stops the run.
 
 The engine reads the declaration with ``target_kinds_of``, ``card_protocols_of`` and
-``card_needs_connection`` and builds the evaluation form from it, so a kind the plugin does not declare
+``card_needs_connection`` (or all of a class's declarations at once with ``describe``) and builds the evaluation form from it, so a kind the plugin does not declare
 cannot be picked. A subclass inherits its base's declaration and may not restate it. A plugin
 declared with @system_under_test, @dataset_through_target or @assesses_inputs alone reads as ``card=``
 with no local model.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Callable
 
 from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
+from aisc_plugin_interface.helpers import helper_roles_of
 from aisc_plugin_interface.model_session import check_outputs
 from aisc_plugin_interface.models.evaluation_input import InputType
 from aisc_plugin_interface.system_under_test import (
@@ -136,6 +138,24 @@ def target_kinds_of(cls) -> tuple[str, ...]:
     if kinds is not None:
         return tuple(kinds)
     return (CARD,) if target_access_of(cls) is not None else ()
+
+
+def describe(cls) -> dict:
+    """What the plugin class declares, as plain JSON values: what it assesses and how it reaches a card
+    target, its helper roles, its evaluation inputs, its project settings and its metric names. The
+    engine can store it once per package version and read it instead of importing the plugin."""
+    return {
+        "target_kinds": list(target_kinds_of(cls)),
+        "card_access": _card_access_of(cls),
+        "card_protocols": list(card_protocols_of(cls)),
+        "card_needs_connection": card_needs_connection(cls),
+        "local_model_input": getattr(cls, "local_model_input", None),
+        "helper_roles": list(helper_roles_of(cls)),
+        "inputs": [d.model_dump(mode="json") for d in getattr(cls, "_input_definitions", [])],
+        "project_configs": [d.model_dump(mode="json") for d in getattr(cls, "_project_config_definitions", [])],
+        "metrics": [f.metric_name for _, f in inspect.getmembers(cls, inspect.isfunction)
+                    if hasattr(f, "metric_name")],
+    }
 
 
 def _card_access_of(cls) -> str | None:
