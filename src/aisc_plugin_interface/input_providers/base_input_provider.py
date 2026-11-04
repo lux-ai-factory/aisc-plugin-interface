@@ -1,6 +1,6 @@
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import TypeVar, Generic
+from typing import ClassVar, TypeVar, Generic
 
 T = TypeVar("T")
 
@@ -10,7 +10,16 @@ class BaseInputProvider(ABC, Generic[T]):
     Abstract base class for data loaders used by plugins.
     Input providers handle the transformation of raw bytes (from S3/Storage)
     into a structured format that the plugin can process.
+
+    Providers may optionally declare type hints used by the UI to flag
+    potentially incompatible adapter chains. ``input_types`` lists the
+    accepted raw formats or adapter outputs (``*.csv``, ``pd.dataframe``);
+    ``output_type`` is the concrete type handed to the plugin. Hints are
+    advisory only.
     """
+
+    input_types: ClassVar[list[str] | None] = None
+    output_type: ClassVar[str | None] = None
 
     def __init__(self, file_content: bytes | Path | T):
         """

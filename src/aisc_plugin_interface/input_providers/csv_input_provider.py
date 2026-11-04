@@ -11,6 +11,9 @@ class CsvInputProvider(BaseInputProvider[list[dict]]):
     Parses the file content into a list of dictionaries, where each dict represents a row.
     """
 
+    input_types = ["*.csv", "bytes", "list[dict]"]
+    output_type = "list[dict]"
+
     def _read_data(self, file_content: bytes | Path | list[dict]) -> list[dict]:
         """
         Converts CSV bytes (or a path to a CSV file) into a list of dictionaries.

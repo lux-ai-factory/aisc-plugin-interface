@@ -11,6 +11,9 @@ class ParquetInputProvider(BaseInputProvider):
     need it installed.
     """
 
+    input_types = ["*.parquet", "bytes"]
+    output_type = "pd.dataframe"
+
     def _read_data(self, file_content: bytes):
         import pandas as pd
 

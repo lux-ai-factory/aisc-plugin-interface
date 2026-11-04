@@ -12,6 +12,9 @@ class OnnxInputProvider(BaseInputProvider):
     it installed.
     """
 
+    input_types = ["*.onnx", "bytes"]
+    output_type = "onnxruntime.InferenceSession"
+
     def _read_data(self, file_content: bytes):
         import onnxruntime as ort
 

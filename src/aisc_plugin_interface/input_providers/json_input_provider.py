@@ -11,5 +11,8 @@ class JsonInputProvider(BaseInputProvider):
     (datashape, llm, resource).
     """
 
+    input_types = ["*.json", "bytes"]
+    output_type = "dict"
+
     def _read_data(self, file_content: bytes) -> dict:
         return json.loads(file_content.decode("utf-8"))
