@@ -303,6 +303,51 @@ class JsonInputProvider(BaseInputProvider):
 
 This design keeps parsing logic out of `evaluate` and makes it easier to test input handling independently.
 
+### Optional type hints
+
+Adapters and input providers may declare advisory types so the webapp can warn about chains that may not line up:
+
+```python
+from aisc_plugin_interface import BaseInputAdapter, InputType, evaluation_input
+from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
+
+
+class CsvToDataFrameAdapter(BaseInputAdapter):
+    input_types = ["*.csv"]
+    output_type = "pd.dataframe"
+
+    def adapt(self, data):
+        ...
+
+
+class DataFrameProvider(BaseInputProvider):
+    input_types = ["pd.dataframe"]
+    output_type = "list[dict]"
+
+    def _read_data(self, file_content):
+        ...
+
+
+@evaluation_input(
+    name="dataset",
+    label="Dataset",
+    input_provider_class=DataFrameProvider,
+    input_type=InputType.DATASET,
+)
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    ...
+```
+
+`input_types` is a list of expected input patterns: entries may use `*` and `?` wildcards (for example `*.csv`).
+`output_type` is a single concrete type string.
+Matching is case-insensitive.
+
+`@evaluation_input` uses the provider class hints automatically, or you can override them inline with `input_types=[...]` / `output_type="..."`.
+
+Hints are optional and when either side of a boundary has no hint, the webapp does not report anything.
+A declared mismatch produces a warning but never blocks an evaluation.
+Use file globs for raw files (`*.csv`, `*.parquet`) and short type names for in-memory data (`pd.dataframe`, `list[dict]`, `bytes`).
+
 ## 10. Metrics and Measurements
 
 The `evaluate` method may return any intermediate object. That object is then passed to each method decorated with `@metric`.
