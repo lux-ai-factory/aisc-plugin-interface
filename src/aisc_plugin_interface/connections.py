@@ -327,14 +327,27 @@ def _as_ipv4(ip):
 
 
 def _refused_ip(ip: ipaddress._BaseAddress) -> bool:
-    return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved
-            or ip.is_unspecified)
+    """Whether an address is internal: anything not globally routable (private, loopback, link-local,
+    shared CGNAT space, benchmarking, protocol assignments, unspecified, reserved), and multicast."""
+    return not ip.is_global or ip.is_multicast
 
 
-def guard_url(url: str, allowed_hosts: list[str] | None = None, denied_addresses: list[str] | None = None) -> None:
+def _is_loopback(ip: ipaddress._BaseAddress) -> bool:
+    """Loopback or unspecified (0.0.0.0 and :: reach the machine itself), after mapping to IPv4."""
+    return ip.is_loopback or ip.is_unspecified
+
+
+def _listed(host: str, port: int, hosts: list[str]) -> bool:
+    return host in hosts or f"{host}:{port}" in hosts
+
+
+def guard_url(url: str, allowed_hosts: list[str] | None = None, denied_addresses: list[str] | None = None,
+              floor_hosts: list[str] | None = None) -> None:
     """Raise BlockedAddress unless ``url`` may be called. ``denied_addresses`` (the stack's own
     services and cloud metadata, from the platform) are refused on the resolved address, even for
-    an allowed host, so re-pointing an allowed name does not reach them."""
+    an allowed host, so re-pointing an allowed name does not reach them. ``floor_hosts`` (the
+    deployment's own hosts, from the platform) are the only ones that may reach loopback or the
+    unspecified address; None keeps the older rule, where any allowed host may."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https"):
         raise BlockedAddress(f"scheme {parts.scheme or '(none)'} is not allowed")
@@ -343,23 +356,39 @@ def guard_url(url: str, allowed_hosts: list[str] | None = None, denied_addresses
         raise BlockedAddress("the URL has no host")
     port = parts.port or (443 if parts.scheme == "https" else 80)
     allowed = [h.lower() for h in (allowed_hosts or [])]
-    denied = {_as_ipv4(ipaddress.ip_address(a)) for a in (denied_addresses or [])}
-    is_allowed = host in allowed or f"{host}:{port}" in allowed
-    if is_allowed and not denied:
+    if floor_hosts is None and _listed(host, port, allowed) and not denied_addresses:
         return
+    checked_addresses(host, port, allowed_hosts, denied_addresses, floor_hosts)
+
+
+def checked_addresses(host: str, port: int, allowed_hosts: list[str] | None, denied_addresses: list[str] | None,
+                      floor_hosts: list[str] | None = None) -> list[ipaddress._BaseAddress]:
+    """The addresses ``host`` resolves to, each checked by the rules of guard_url (as IPv4 when an IPv6
+    address carries one); BlockedAddress when one of them may not be reached or the name does not resolve."""
+    host = host.lower()
+    allowed = [h.lower() for h in (allowed_hosts or [])]
+    denied = {_as_ipv4(ipaddress.ip_address(a)) for a in (denied_addresses or [])}
+    floor = None if floor_hosts is None else [h.lower() for h in floor_hosts]
+    is_allowed = _listed(host, port, allowed)
+    in_floor = floor is None or _listed(host, port, floor)
     addresses = [_as_ipv4(ip) for ip in _addresses(host, port)]
-    if not addresses and not is_allowed:
-        raise BlockedAddress(f"{host} is an internal address; allow it under Manage, Connections, Allowed internal hosts")
+    if not addresses:
+        raise BlockedAddress(f"{host} does not resolve")
     for ip in addresses:
-        _check_address(host, ip, is_allowed, denied)
+        _check_address(host, ip, is_allowed, denied, in_floor)
+    return addresses
 
 
-def _check_address(host: str, ip, is_allowed: bool, denied: set) -> None:
-    """One address of `host`, by the rules: a denied one never, else an allowed host, else no internal one."""
+def _check_address(host: str, ip, is_allowed: bool, denied: set, in_floor: bool = True) -> None:
+    """One address of `host`, by the rules: a denied one never, else an allowed host, else no internal one;
+    loopback or unspecified only for a host of the floor."""
     if ip in denied:
         raise BlockedAddress(f"{host} is a service of this deployment or a metadata address, never allowed")
     if not is_allowed and _refused_ip(ip):
         raise BlockedAddress(f"{host} is an internal address; allow it under Manage, Connections, Allowed internal hosts")
+    if not in_floor and _is_loopback(ip):
+        raise BlockedAddress(f"{host} is loopback or unspecified: only the deployment's CONNECTIONS_ALLOWED_HOSTS"
+                             " may reach it")
 
 
 #: The largest answer a system's call reads: past it the call is refused, and no more is read into
@@ -374,7 +403,7 @@ def _read_capped(stream, label: str) -> bytes:
     return raw
 
 
-#: The rules of the call in flight on this thread, (allowed hosts, denied addresses), for the peer check.
+#: The rules of the call in flight on this thread (allowed hosts, denied addresses, floor), for the peer check.
 _POLICY = threading.local()
 
 
@@ -383,9 +412,10 @@ class _Policy:
     urllib resolves the name a second time to connect, and a name can answer differently (DNS
     rebinding). The platform's own calls run without one."""
 
-    def __init__(self, allowed_hosts, denied_addresses):
+    def __init__(self, allowed_hosts, denied_addresses, floor_hosts=None):
         self.allowed = [h.lower() for h in (allowed_hosts or [])]
         self.denied = {_as_ipv4(ipaddress.ip_address(a)) for a in (denied_addresses or [])}
+        self.floor = None if floor_hosts is None else [h.lower() for h in floor_hosts]
 
     def __enter__(self):
         _POLICY.current = self
@@ -415,9 +445,11 @@ def _check_peer(conn) -> None:
     if policy is None or conn._tunnel_host or _to_proxy(conn):
         return
     host = (conn.host or "").lower()
-    is_allowed = host in policy.allowed or f"{host}:{conn.port}" in policy.allowed
+    is_allowed = _listed(host, conn.port, policy.allowed)
+    in_floor = policy.floor is None or _listed(host, conn.port, policy.floor)
     try:
-        _check_address(host, _as_ipv4(ipaddress.ip_address(conn.sock.getpeername()[0])), is_allowed, policy.denied)
+        _check_address(host, _as_ipv4(ipaddress.ip_address(conn.sock.getpeername()[0])), is_allowed, policy.denied,
+                       in_floor)
     except BlockedAddress:
         conn.sock.close()
         raise
@@ -684,11 +716,12 @@ def _a2a_outcome(d: Descriptor, result: Any) -> tuple[str, Any]:
     raise EndpointBadResponse(f"{d.label}: the A2A task ended in {state}")
 
 
-def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts, denied_addresses=None) -> Any:
-    guard_url(url, allowed_hosts, denied_addresses)
+def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts, denied_addresses=None,
+               floor_hosts=None) -> Any:
+    guard_url(url, allowed_hosts, denied_addresses, floor_hosts)
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
     try:
-        with _Policy(allowed_hosts, denied_addresses), _OPENER.open(req, timeout=d.timeout_s) as resp:
+        with _Policy(allowed_hosts, denied_addresses, floor_hosts), _OPENER.open(req, timeout=d.timeout_s) as resp:
             return json.loads(_read_capped(resp, d.label) or b"null")
     except urllib.error.HTTPError as exc:
         raise EndpointBadResponse(f"{d.label}: the agent answered {exc.code} while polling") from None
@@ -701,7 +734,7 @@ def _post_json(d: Descriptor, url: str, headers: dict, body: dict, allowed_hosts
 
 
 def _a2a_answer(d: Descriptor, payload: Any, url: str, headers: dict, allowed_hosts, sleep, status: int,
-                latency: int, denied_addresses=None) -> Answer:
+                latency: int, denied_addresses=None, floor_hosts=None) -> Answer:
     deadline = time.monotonic() + d.timeout_s
     while True:
         if not isinstance(payload, dict):
@@ -720,24 +753,28 @@ def _a2a_answer(d: Descriptor, payload: Any, url: str, headers: dict, allowed_ho
         sleep(1)
         legacy = _a2a_legacy(d)
         payload = _post_json(d, url, headers, a2a_request(d, "tasks/get" if legacy else "GetTask", {"id": value}),
-                             allowed_hosts, denied_addresses)
+                             allowed_hosts, denied_addresses, floor_hosts)
 
 
 def call(d: Descriptor, input: Any, history: list | None = None, params: dict | None = None,
          allowed_hosts: list[str] | None = None, sleep: Callable[[float], None] = time.sleep,
-         waits: tuple = RETRY_WAITS, denied_addresses: list[str] | None = None) -> Answer:
+         waits: tuple = RETRY_WAITS, denied_addresses: list[str] | None = None,
+         floor_hosts: list[str] | None = None) -> Answer:
     """One question to the system, with the retries (``waits``: seconds before each retry; ``()``
-    for a single probe, as the platform's Test button does); see EndpointClient.ask."""
+    for a single probe, as the platform's Test button does); see EndpointClient.ask. The network rule
+    (``allowed_hosts``, ``denied_addresses``, ``floor_hosts``) is guard_url's."""
     history = check_history(history)
     method, url, headers, data = render_request(d, input, history, dict(params or {}))
     waits = list(waits)
     while True:
-        guard_url(url, allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses)
+        guard_url(url, allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses,
+                  floor_hosts)
         started = time.monotonic()
         retryable: EndpointError
         try:
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
-            with _Policy(allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses), \
+            with _Policy(allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(), denied_addresses,
+                         floor_hosts), \
                     _OPENER.open(req, timeout=d.timeout_s) as resp:
                 status, raw = resp.status, _read_capped(resp, d.label)
         except _Redirected as exc:
@@ -782,7 +819,7 @@ def call(d: Descriptor, input: Any, history: list | None = None, params: dict | 
             if status < 300 and d.kind == "a2a":
                 return _a2a_answer(d, payload, url, headers,
                                    allowed_hosts if allowed_hosts is not None else allowed_hosts_from_env(),
-                                   sleep, status, latency, denied_addresses)
+                                   sleep, status, latency, denied_addresses, floor_hosts)
             if status < 300 and d.kind == "openai":
                 return _openai_answer(d, payload, status, latency)
             if status < 300:
@@ -912,11 +949,12 @@ class EndpointClient:
 
     def __init__(self, descriptor: Descriptor, plugin=None, allowed_hosts: list[str] | None = None,
                  sleep: Callable[[float], None] = time.sleep, denied_addresses: list[str] | None = None,
-                 run_key: RunKey | None = None):
+                 run_key: RunKey | None = None, floor_hosts: list[str] | None = None):
         self.descriptor = descriptor
         self._plugin = plugin
         self._allowed = allowed_hosts
         self._denied = denied_addresses
+        self._floor = floor_hosts
         self._sleep = sleep
         self.run_key = run_key
         self._recorded = False
@@ -972,11 +1010,14 @@ class EndpointClient:
         if not isinstance(data, dict):
             raise EndpointBadResponse(f"the platform's answer resolving connection {name!r} was not a JSON object")
         # The network rule is the platform's, per project: the internal hosts this connection may
-        # reach and the addresses it never may. The run's own environment opens nothing.
+        # reach, the addresses it never may, and the floor (the only hosts that may reach loopback; a
+        # platform that sends none keeps the older rule). The run's own environment opens nothing.
         allowed, denied = list(data.get("allowed_hosts") or []), list(data.get("denied_addresses") or [])
+        floor = data.get("floor_hosts")
+        floor = list(floor) if isinstance(floor, list) else None
         if not os.environ.get("PLATFORM_RUN_PASS"):
             return cls(Descriptor.from_dict(data), plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,
-                       **kwargs)
+                       floor_hosts=floor, **kwargs)
         # under a run pass the key stays on the platform: the client asks it with a run key
         descriptor = Descriptor.from_dict(data)
         try:
@@ -987,7 +1028,7 @@ class EndpointClient:
             raise
         except RuntimeError as exc:
             raise EndpointError(str(exc)) from None
-        return cls(descriptor, plugin=plugin, allowed_hosts=allowed, denied_addresses=denied,
+        return cls(descriptor, plugin=plugin, allowed_hosts=allowed, denied_addresses=denied, floor_hosts=floor,
                    run_key=_run_key_from(issued, descriptor.name), **kwargs)
 
     def ask(self, input: Any, history: list | None = None, **params) -> Answer:
@@ -1002,7 +1043,7 @@ class EndpointClient:
             answer = self._ask_platform(input, history, params)
         else:
             answer = call(self.descriptor, input, history, params, allowed_hosts=self._allowed, sleep=self._sleep,
-                          denied_addresses=self._denied)
+                          denied_addresses=self._denied, floor_hosts=self._floor)
         self._record()
         return answer
 
