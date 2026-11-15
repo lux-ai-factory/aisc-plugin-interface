@@ -94,3 +94,13 @@ def test_a_hook_other_than_the_three_is_refused(demo_module, monkeypatch):
 
 def test_the_three_form_hooks_are_the_only_ones():
     assert manifest().HOOKS == ("on_config_change", "parse_config_from_dataset", "get_metric_visualizations")
+
+
+class FormThatDoesNotBuild(CardOnly):
+    def get_full_schema(self):
+        raise RuntimeError("the form needs a server")
+
+
+def test_a_form_that_cannot_be_built_is_said_so_not_shown_empty():
+    got = manifest().manifest_of(FormThatDoesNotBuild)
+    assert got["form_schema"] is None and got["form_ui_schema"] is None

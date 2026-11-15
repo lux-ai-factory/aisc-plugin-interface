@@ -27,8 +27,6 @@ from aisc_plugin_interface.models.measure import ChartType, MetricVisualization
 
 #: the plugin code the engine may ask for once a plugin is installed: its form hooks, nothing else
 HOOKS = ("on_config_change", "parse_config_from_dataset", "get_metric_visualizations")
-#: a form a plugin cannot build (no configuration model): an object with no field
-EMPTY_FORM = {"type": "object", "properties": {}}
 
 
 def _json(value: Any) -> Any:
@@ -44,16 +42,18 @@ def _overridden(cls, hook: str) -> bool:
     return getattr(cls, hook, None) is not getattr(BaseEvaluationPlugin, hook)
 
 
-def _form(plugin) -> tuple[dict, dict]:
-    """The form the engine shows first: the hook's answer with no data, else the declared schema, else none."""
+def _form(plugin) -> tuple[dict | None, dict | None]:
+    """The form the engine shows first: the hook's answer with no data, else the declared schema; (None, None)
+    when neither can be built (no configuration model, or a form that needs what the sandbox does not have), so
+    the engine can say so instead of showing an empty form."""
     try:
         _config, schema, ui = plugin.on_config_change(None)
     except Exception:  # noqa: BLE001 - a hook that needs data or a network falls back to the declared form
         try:
             schema, ui = plugin.get_full_schema()
-        except Exception:  # noqa: BLE001 - a plugin without a configuration model has an empty form
-            return dict(EMPTY_FORM), {}
-    return (_json(schema) if isinstance(schema, dict) else dict(EMPTY_FORM)), (
+        except Exception:  # noqa: BLE001 - said as None
+            return None, None
+    return (_json(schema) if isinstance(schema, dict) else None), (
         _json(ui) if isinstance(ui, dict) else {}
     )
 
