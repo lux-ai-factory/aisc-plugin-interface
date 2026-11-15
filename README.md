@@ -73,11 +73,11 @@ From PyPI (the released version, built from the `master` branch):
 uv add aisc-plugin-interface        # or: pip install aisc-plugin-interface
 ```
 
-This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
+This branch is 0.5.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
 `system_under_test`, `targets`, `assesses`, `helpers` or `model_session`, which exist only on the
 `pilot` branch that the AISC stack uses. A plugin that needs them pins
-`aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi), from a vendored wheel, or
-from git, never from PyPI until 0.4.0 is released there:
+`aisc-plugin-interface>=0.5.0` and installs it from the stack's package index (devpi), from a vendored wheel, or
+from git, never from PyPI until 0.5.0 is released there:
 
 ```bash
 uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch pilot
@@ -100,12 +100,12 @@ the aisc repo root):
 - `plugin-publisher` mounts this folder and publishes it to devpi, where test runs take it from.
 
 A change here reaches those services when they restart. Images built on their own, and
-`docker-compose.engine-standalone.yml`, use the wheel locked in `apps/backend` and `apps/eval` (0.4.0, under their
+`docker-compose.engine-standalone.yml`, use the wheel locked in `apps/backend` and `apps/eval` (0.5.0, under their
 `vendor/`, built from this checkout by the aisc repo's `scripts/vendor-plugin-interface.sh`).
 
 ## Writing a plugin
 
-Create a project and add the library (from git or a vendored wheel for the 0.4.0 features, see Install):
+Create a project and add the library (from git or a vendored wheel for the 0.5.0 features, see Install):
 
 ```bash
 mkdir my-aisc-plugin && cd my-aisc-plugin

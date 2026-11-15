@@ -1,12 +1,13 @@
-"""The release this branch is: above PyPI's 0.3.0, so that a pin of ``>=0.4.0`` never resolves PyPI's
-0.3.0 (which has none of this branch's modules), with upstream's floors for pydantic and rich."""
+"""The release this branch is: above PyPI's 0.3.0, so that a pin of ``>=0.5.0`` never resolves PyPI's
+0.3.0 (which has none of this branch's modules), with upstream's floors for pydantic and rich. The stack's
+package index never replaces a version it holds, so a change of this library is a new version."""
 import importlib.metadata
 import tomllib
 from pathlib import Path
 
 
-def test_the_package_says_0_4_0():
-    assert importlib.metadata.version("aisc-plugin-interface") == "0.4.0"
+def test_the_package_says_0_5_0():
+    assert importlib.metadata.version("aisc-plugin-interface") == "0.5.0"
 
 
 def test_it_needs_the_upstream_floors_of_pydantic_and_rich():

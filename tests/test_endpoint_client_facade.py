@@ -469,8 +469,7 @@ def test_an_ask_url_that_is_not_plain_ascii_is_refused_like_another_host(platfor
 
 def test_the_changelog_security_entry_says_ask_urls_not_plain_ascii_are_refused():
     changelog = (Path(__file__).parents[1] / "CHANGELOG.md").read_text(encoding="utf-8")
-    release = changelog.split("\n## ")[1]
-    assert release.startswith("2026-10-25: 0.4.0")
+    release = next(r for r in changelog.split("\n## ") if r.startswith("2026-10-25: 0.4.0"))
     security = release.split("\nSecurity\n", 1)[1].split("\n\n", 1)[0]
     assert re.search(r"not plain (printable )?ASCII", security), security
     assert "cannot read" in security, security
