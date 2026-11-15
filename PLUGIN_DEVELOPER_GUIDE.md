@@ -78,10 +78,10 @@ uv run aisc-plugin-interface init-plugin
 `init-plugin` asks for a class name and a file path, writes a plugin template into
 `src/<package>/` and adds the class to `__init__.py`. `--force` overwrites an existing file.
 
-This branch is 0.4.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
+This branch is 0.5.0, above PyPI's latest release 0.3.0. PyPI's 0.3.0 has none of `connections`,
 `system_under_test`, `targets`, `assesses`, `helpers` or `model_session` (section 13). A plugin that
-needs them pins `aisc-plugin-interface>=0.4.0` and installs it from the stack's package index (devpi)
-or from git (`--branch pilot`), never from PyPI until 0.4.0 is released there:
+needs them pins `aisc-plugin-interface>=0.5.0` and installs it from the stack's package index (devpi)
+or from git (`--branch pilot`), never from PyPI until 0.5.0 is released there:
 
 ```bash
 uv add git+https://github.com/lux-ai-factory/aisc-plugin-interface --branch pilot

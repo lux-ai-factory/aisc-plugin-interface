@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-15: 0.5.0, a new version for the immutable package index
+
+Changed
+- The stack's package index (devpi) no longer lets a version be replaced: a published version is the code every
+  install of it recorded by its wheel's sha256. 0.4.0 changed several times without a new version (the run key
+  check, `describe`, the address guard, the manifest), so the code that has all of them is 0.5.0, and every pin
+  moves to `aisc-plugin-interface>=0.5.0`. A plugin that pins `>=0.4.0` resolves 0.5.0 from the index; the 0.4.0
+  already there stays as it is. Nothing in the library's API changed from the last 0.4.0. Test:
+  `tests/test_version.py`.
+
 ## 2026-10-25: 0.4.0, upstream 0.3.0 merged; the target's key stays on the platform
 
 New
