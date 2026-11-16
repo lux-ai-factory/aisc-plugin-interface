@@ -446,7 +446,7 @@ def test_a_connection_the_system_drops_is_retried_then_an_endpoint_error(stub, m
 def test_an_answer_past_the_size_cap_is_refused_not_read_whole(stub, monkeypatch):
     """The system's answer is never read whole into memory, in the shared worker or the platform: past
     MAX_ANSWER_BYTES the call is refused, and at most that much is read."""
-    monkeypatch.setattr(c, "MAX_ANSWER_BYTES", 1000)
+    monkeypatch.setattr(c.transport, "MAX_ANSWER_BYTES", 1000)
     stub.route("/chat", (200, {"answer": "x" * 5000}))
     with pytest.raises(c.EndpointBadResponse, match="larger than 1000 bytes"):
         client(stub).ask("q", lang="en")
