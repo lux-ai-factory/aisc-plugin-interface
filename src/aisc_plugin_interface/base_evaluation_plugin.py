@@ -4,6 +4,7 @@ import logging
 import textwrap
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sized
+from pathlib import Path
 from typing import (
     Any,
     get_args,
@@ -292,9 +293,14 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
                 f"Artifact callback not configured. Dropping artifact: {name}"
             )
 
-    def set_input_content(self, name: str, file_content: bytes | None) -> None:
+    def set_input_content(self, name: str, file_content: bytes | Path | Any | None) -> None:
         """
         Called by the runtime. Instantiates the provider mapped via @input.
+
+        ``file_content`` may be:
+        - the raw input bytes read from the tmp file,
+        - a ``Path`` to a tmp file the provider is expected to read itself,
+        - already-parsed data ``T`` of any type.
         """
         provider_cls = self._input_provider_types.get(name)
         if provider_cls and file_content is not None:
@@ -426,10 +432,30 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         schema, ui_schema = self.get_full_schema()
         return form_data, schema, ui_schema
 
-    def parse_config_from_dataset(self, file_content: bytes) -> dict | None:
+    def parse_config_from_dataset(self, file_content: bytes | Path | Any) -> dict | None:
         """
         Optional: Try to parse a valid config from the dataset.
-        Use a InputProvider to read the file contents
+
+        Override this in a plugin when ``can_parse_config_from_dataset`` is
+        enabled so the frontend can pre-fill the config form from an uploaded
+        dataset. The base implementation does nothing and returns ``None``.
+
+        ``file_content`` may be:
+        - the raw input bytes read from the tmp file,
+        - a ``Path`` to a tmp file the provider is expected to read itself,
+        - already-parsed data ``T`` of any type.
+
+        Args:
+            file_content: The dataset content, as bytes, as a ``Path`` to the
+                file on disk, or as an already-parsed object.
+
+        Returns:
+            A dict of config values (matching the plugin's config model), or
+            ``None`` when the file cannot be interpreted as a valid config.
+
+        Tip:
+            Use an ``InputProvider`` (e.g. ``CsvInputProvider``) to read the
+            file contents before extracting config fields.
         """
         return None
 
