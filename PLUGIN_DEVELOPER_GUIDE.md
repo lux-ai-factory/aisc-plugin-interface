@@ -3,6 +3,20 @@
 This guide is for developers who want to implement evaluation plugins.
 The goal is to explain the contract exposed to plugin authors, clarify the current extension points, and make it easier to identify which additional hooks would be useful.
 
+## 0. Upgrading an existing plugin
+
+Before changing a plugin that already works against a released version, read the migration guide for
+that hop — it lists what changed in the plugin interface, the plugin manager, the evaluation runtime
+and the backend, and which changes are breaking:
+
+- [`aisc` repo → `docs/migrations/`](https://github.com/lux-ai-factory/aisc/tree/master/docs/migrations)
+  — one `vX-to-vY.md` per release, plus a `README` explaining how they are written.
+
+The short version for the v1.3.0 → v1.4.0 hop: a plugin that reads its inputs through the declared
+`@input` providers, takes all settings from plugin config / project settings, and does not call the
+backend mid-run keeps working. The one thing that breaks a plugin is depending on **environment
+variables** the worker used to inherit — the child environment is now a closed allowlist.
+
 ## 1. Purpose
 
 The system is built around a plugin model in which evaluation logic is implemented outside the core application and loaded dynamically at runtime.
