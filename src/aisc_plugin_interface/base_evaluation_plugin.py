@@ -197,6 +197,22 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
             MetricVisualization(chart_type=ChartType.TABLE, metrics=self.get_metrics())
         ]
 
+    def get_report_renderer(self):
+        """The renderer of this plugin's section in a report, or None.
+
+        Return an object with ``render(run, ctx) -> str`` (typically a
+        ``aisc_plugin_interface.report.BaseToolRenderer``): it draws one read-only
+        ``aisc_plugin_interface.report.ToolRun`` — this plugin's run, with its
+        observations, measurements, components and artifacts — as an HTML fragment,
+        and may also declare a ``headline()`` and ``charts()``.
+
+        The default returns None. That is deliberate: a plugin that does not draw its
+        own section is not left out of a report — the report falls back to its generic
+        measurements table for this plugin's run, so old plugins keep working and a
+        plugin with nothing custom still exports something useful.
+        """
+        return None
+
     def export_metrics(self, *args, **kwargs) -> list[Measure]:
         """
         Executes all methods decorated with @metric and aggregates their results.
