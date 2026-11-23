@@ -50,6 +50,9 @@ def test_csv_produces_a_table():
     frame = CsvDataAdapter().load(b"a,b\n1,2\n", "table")
     assert isinstance(frame, pd.DataFrame)
     assert list(frame.columns) == ["a", "b"]
+    # ``table`` is typed (pandas), so a numeric column stays numeric — unlike
+    # ``records``, which are raw strings.
+    assert pd.api.types.is_integer_dtype(frame["a"])
 
 
 def test_jsonl_produces_records_and_table():

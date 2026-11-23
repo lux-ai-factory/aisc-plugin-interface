@@ -26,10 +26,21 @@ class CsvDataAdapter(DataAdapter):
     delimiter = ","
 
     def load(self, source: _SOURCE, produce: str) -> Any:
-        rows = read_rows(source, self.delimiter)
-        if produce == "records":
-            return rows
-        return rows_to_table(rows)
+        # ``records`` is raw string rows (as ``csv.DictReader`` gives); ``table``
+        # is a **typed** DataFrame via pandas, so numeric columns stay numeric —
+        # what an ML plugin expects (and what the old providers gave).
+        if produce == "table":
+            return self._read_table(source)
+        return read_rows(source, self.delimiter)
+
+    def _read_table(self, source: _SOURCE):
+        import pandas as pd
+
+        if isinstance(source, Path):
+            return pd.read_csv(source, delimiter=self.delimiter)
+        if isinstance(source, bytes):
+            return pd.read_csv(io.BytesIO(source), delimiter=self.delimiter)
+        return pd.read_csv(io.StringIO(source), delimiter=self.delimiter)
 
 
 class TsvDataAdapter(CsvDataAdapter):
