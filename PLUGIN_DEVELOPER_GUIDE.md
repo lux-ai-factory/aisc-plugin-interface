@@ -317,6 +317,93 @@ class JsonInputProvider(BaseInputProvider):
 
 This design keeps parsing logic out of `evaluate` and makes it easier to test input handling independently.
 
+### Inputs and adapters (0.5.0)
+
+A slot declares what it can use with `accepts` and what the bound component *is*
+with `role`. The old `input_type=` and `input_provider_class=` declarations keep
+working and are translated into `accepts`/`role`:
+
+| `input_type` | shorthand `accepts` | shorthand `role` |
+|---|---|---|
+| `LLM` | `["openai-chat"]` | `subject` |
+| `DATASET` | the provider's value type (a CSV provider gives `records`) | `input` |
+| `MODEL` | the provider's value type (an ONNX provider gives `onnx-session`) | `input` |
+| `DATASHAPE` | `["json"]` | `input` |
+| `RESOURCE` | `["resource"]` | `input` |
+
+There are two kinds of adapter, both in `aisc_plugin_interface.adapters`:
+
+**Data adapters** turn a file format into the value the slot accepts, once, in the
+plugin process. The standard library reads `csv`, `tsv`, `parquet`, `jsonl`,
+`json` and `onnx` and produces `table`, `records`, `json`, `onnx-session` or
+`file`. A plugin that wants CSV records from a Parquet upload simply declares
+`accepts=["records"]`; the platform picks the adapter.
+
+**Endpoint adapters** turn a target's protocol into the protocol the plugin
+speaks (its *face*), per call. The standard library has `openai` (a passthrough),
+`oip`, `rest` and `a2a`. An `openai-chat` slot keeps the `LLMConfig` shape; the
+plugin receives the run door's local URL and a run token, never the real key:
+
+```python
+@evaluation_input(name="target", label="Target", input_type=InputType.LLM)
+class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
+    def evaluate(self, config_data):
+        llm = self.get_llm_config("target")          # url is the door, secret_key names the token
+        api_key = self.get_secret(llm.secret_key)    # the run token, not the target key
+```
+
+A non-LLM endpoint slot reads `self.get_endpoint(name)`, returning an
+`EndpointConfig(url, protocol, model, token_key)`. A plugin that reaches a
+bespoke system can declare the environment its library already reads, and the
+runtime fills it from the door:
+
+```python
+@evaluation_input(
+    name="target", label="Target", input_type=InputType.LLM,
+    env={"OPENAI_BASE_URL": "{base_url}", "OPENAI_API_KEY": "{api_key}"},
+)
+```
+
+`{base_url}`, `{api_key}` and `{model}` are filled per run.
+
+#### Shipping an adapter with your plugin
+
+An adapter is a small class next to your plugin class; the plugin-manager finds it
+in the same scan. A data adapter subclasses `DataAdapter`; an endpoint adapter
+subclasses `EndpointAdapter`. Both declare an `id`, a `label`, a pydantic `Config`
+and their types:
+
+```python
+from aisc_plugin_interface.adapters import DataAdapter
+
+
+class BankStatementAdapter(DataAdapter):
+    id = "bank-statement"
+    label = "Bank statement"
+    reads = ("csv",)
+    produces = ("records",)
+
+    def load(self, source, produce: str):
+        ...  # return list[dict]
+```
+
+Then name it as a slot's default, and optionally make it the only choice:
+
+```python
+@evaluation_input(
+    name="target", label="Target", input_type=InputType.LLM,
+    adapter="my_pkg:BankPortalAdapter", adapter_required=True,
+)
+```
+
+A shipped endpoint adapter still runs behind the run door, not in the plugin
+process. Adapters are matched to slots by type, so a shipped adapter is offered
+wherever it fits, not only in the plugin that shipped it.
+
+The **presets** (`llm`, `agent`, `model-api`, `dataset`, `model-file`) are the
+simple "Add …" forms; a preset is a starting point, not a mode, and "Custom"
+opens the adapter-plus-config form.
+
 ## 10. Metrics and Measurements
 
 The `evaluate` method may return any intermediate object. That object is then passed to each method decorated with `@metric`.

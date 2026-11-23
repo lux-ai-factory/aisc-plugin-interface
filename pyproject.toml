@@ -1,6 +1,6 @@
 [project]
 name = "aisc-plugin-interface"
-version = "0.4.0"
+version = "0.5.0"
 description = "Plugin interface for the AISC evaluation framework"
 authors = [{ name = "Sean Blevins", email = "sean.blevins@uni.lu" }]
 maintainers = [
@@ -21,6 +21,11 @@ dependencies = [
 report = [
     "jinja2>=3.1.6",
     "markupsafe>=3.0.4",
+]
+# The endpoint adapters (aisc_plugin_interface.adapters.endpoint) use httpx when the
+# caller makes the call. The base install stays pydantic-only.
+endpoint = [
+    "httpx>=0.28.1",
 ]
 
 [build-system]

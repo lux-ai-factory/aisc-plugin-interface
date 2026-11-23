@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from aisc_plugin_interface.models.datashape import DataShape
 from aisc_plugin_interface.models.llm import LLMConfig
+from aisc_plugin_interface.models.endpoint import EndpointConfig
 from aisc_plugin_interface.models.resource import ResourceConfig
 from aisc_plugin_interface.decorators.evaluation_input import InputDefinition
 from aisc_plugin_interface.models.project_config_definition import ProjectConfigDefinition
@@ -361,6 +362,21 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
             return default
         try:
             return ResourceConfig.model_validate(payload)
+        except Exception:
+            return default
+
+    def get_endpoint(self, name: str, default: EndpointConfig | None = None) -> EndpointConfig | None:
+        """
+        Return a non-LLM endpoint input parsed into the `EndpointConfig` model.
+
+        ``url`` is the run door's local URL and ``token_key`` names the run token;
+        the real target URL and key stay with the door.
+        """
+        payload = self.get_input_data(name)
+        if payload is None:
+            return default
+        try:
+            return EndpointConfig.model_validate(payload)
         except Exception:
             return default
 
