@@ -82,3 +82,26 @@ def test_the_raw_file_adapter_hands_back_the_source():
 def test_data_adapters_are_discoverable():
     ids = {a.id for a in adapters.BUILTIN_DATA_ADAPTERS}
     assert ids == {"csv", "tsv", "parquet", "jsonl", "json", "onnx", "file"}
+
+
+def test_onnx_adapter_passes_bytes_not_a_bytesio(monkeypatch):
+    """onnxruntime takes serialized model bytes (or a path); a BytesIO fails with
+    `Unable to load from type BytesIO`. The eval runtime always hands us bytes."""
+    import sys
+    import types
+
+    from aisc_plugin_interface.adapters.data.standard import OnnxDataAdapter
+
+    seen: dict = {}
+    fake = types.ModuleType("onnxruntime")
+
+    def _inference_session(arg, *args, **kwargs):
+        seen["arg"] = arg
+        return object()
+
+    fake.InferenceSession = _inference_session
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+
+    OnnxDataAdapter().load(b"model-bytes", "onnx-session")
+    assert seen["arg"] == b"model-bytes"
+    assert not isinstance(seen["arg"], io.BytesIO)

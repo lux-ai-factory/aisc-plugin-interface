@@ -105,7 +105,9 @@ class OnnxDataAdapter(DataAdapter):
 
         if isinstance(source, Path):
             return ort.InferenceSession(str(source))
-        return ort.InferenceSession(io.BytesIO(source))
+        # onnxruntime takes the serialized model bytes or a path; it does not
+        # accept a BytesIO (the eval runtime always hands us bytes).
+        return ort.InferenceSession(source)
 
 
 class RawFileDataAdapter(DataAdapter):
