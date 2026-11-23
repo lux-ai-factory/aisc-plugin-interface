@@ -12,8 +12,8 @@ and the backend, and which changes are breaking:
 - [`aisc` repo → `docs/migrations/`](https://github.com/lux-ai-factory/aisc/tree/master/docs/migrations)
   — one `vX-to-vY.md` per release, plus a `README` explaining how they are written.
 
-The short version for the v1.3.0 → v1.4.0 hop: a plugin that reads its inputs through the declared
-`@input` providers, takes all settings from plugin config / project settings, and does not call the
+The short version for the v1.3.0 → v1.4.0 hop: a plugin that reads its inputs from the declared
+slots, takes all settings from plugin config / project settings, and does not call the
 backend mid-run keeps working. The one thing that breaks a plugin is depending on **environment
 variables** the worker used to inherit — the child environment is now a closed allowlist.
 
@@ -128,7 +128,7 @@ The core contract is centered around these capabilities:
 - `validate_config_form_data(config_form_data)`: validates incoming configuration against your typed model
 - `@metric("...")`: marks metric export methods
 - `export_metrics(...)`: runs all metric exporters and aggregates their `Measure` outputs
-- `@evaluation_input(...)`: declares a dataset/model input slot and its provider class
+- `@evaluation_input(...)`: declares a dataset/model input slot and its accepted value types
 - `get_input_data(name)`: returns parsed input data for slots declared with `@evaluation_input`
 - `progress_bar(...)` / `report_progress(TaskProgress(...))`: optional progress reporting hooks
 - `upload_artifact(name, content)`: optional artifact upload hook
@@ -152,7 +152,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aisc_plugin_interface import BaseEvaluationPlugin, InputType, Measure, evaluation_input, metric
-from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
 
 
 class ConfigSchema(BaseModel):
@@ -171,8 +170,8 @@ class ConfigSchema(BaseModel):
 @evaluation_input(
     name="dataset",
     label="Dataset",
-    input_provider_class=CsvInputProvider,
     input_type=InputType.DATASET,
+    accepts=["records"],
     required=True,
 )
 class ExampleCsvPlugin(BaseEvaluationPlugin[ConfigSchema]):
@@ -273,61 +272,48 @@ class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
 
 ## 9. Input Parsing
 
-The plugin base class separates raw input delivery from parsed input consumption.
+The runtime resolves a **data adapter** for each input slot and hands the plugin
+the produced value. There is one input mechanism — adapters (standard ones, or
+ones a plugin ships); the old input-provider classes were removed (ADR 0009 D-22).
 
-Declare each dataset or model slot with the `@evaluation_input` class decorator, naming the provider class that parses it.
-
-Inside `evaluate`, read parsed inputs with `get_input_data(name)`, which returns `None` when the input was not provided.
-
-### Built-in CSV provider
-
-The interface package includes `CsvInputProvider`, which turns CSV bytes into `list[dict]`.
-
-Example:
+Declare each slot with `@evaluation_input`, naming the value types it accepts with
+`accepts`. Inside `evaluate`, read the value with `get_input_data(name)`, which
+returns `None` when the input was not provided (for an `openai-chat` slot, use
+`get_llm_config(name)` instead).
 
 ```python
 from aisc_plugin_interface import BaseEvaluationPlugin, InputType, evaluation_input
-from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
 
 
 @evaluation_input(
     name="dataset",
     label="Dataset",
-    input_provider_class=CsvInputProvider,
     input_type=InputType.DATASET,
+    accepts=["records"],   # a list of dicts; use ["table"] for a pandas DataFrame
     required=True,
 )
 class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
-    ...
+    def evaluate(self, config_data):
+        rows = self.get_input_data("dataset")   # list[dict]
+        ...
 ```
 
-### Custom input providers
-
-If you need another format, create a subclass of `BaseInputProvider`.
-
-```python
-from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
-
-
-class JsonInputProvider(BaseInputProvider):
-    def _read_data(self, file_content: bytes):
-        import json
-        return json.loads(file_content.decode("utf-8"))
-```
-
-This design keeps parsing logic out of `evaluate` and makes it easier to test input handling independently.
+**A plugin may ship its own data adapter** for a format the standard library does
+not cover: subclass `DataAdapter` in the package's module folder and give the slot
+its id (`adapter="<id>"`). The platform resolves and runs it like any other. This
+replaces the old `input_provider_class=`; there are no input providers any more.
 
 ### Inputs and adapters (0.5.0)
 
-A slot declares what it can use with `accepts` and what the bound component *is*
-with `role`. The old `input_type=` and `input_provider_class=` declarations keep
-working and are translated into `accepts`/`role`:
+A slot declares the value types (data) or face protocols (endpoint) it can use
+with `accepts`, and what the bound component *is* with `role`. The `input_type`
+shorthand fills `accepts`/`role`:
 
 | `input_type` | shorthand `accepts` | shorthand `role` |
 |---|---|---|
 | `LLM` | `["openai-chat"]` | `subject` |
-| `DATASET` | the provider's value type (a CSV provider gives `records`) | `input` |
-| `MODEL` | the provider's value type (an ONNX provider gives `onnx-session`) | `input` |
+| `DATASET` | `["records"]` (set `accepts=["table"]` for a DataFrame) | `input` |
+| `MODEL` | `["onnx-session"]` | `input` |
 | `DATASHAPE` | `["json"]` | `input` |
 | `RESOURCE` | `["resource"]` | `input` |
 
@@ -559,9 +545,10 @@ Example: infer the score column from the uploaded CSV header (requires `feature_
 ```python
 class MyPlugin(BaseEvaluationPlugin[ConfigSchema]):
     def parse_config_from_dataset(self, file_content: bytes) -> dict | None:
-        from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
+        import csv
+        import io
 
-        rows = CsvInputProvider(file_content).get_data()
+        rows = list(csv.DictReader(io.StringIO(file_content.decode("utf-8"))))
         if not rows:
             return None
         return {"score_column": next(iter(rows[0]), "")}

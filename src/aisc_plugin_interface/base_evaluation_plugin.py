@@ -29,7 +29,6 @@ from aisc_plugin_interface.decorators.evaluation_input import InputDefinition
 from aisc_plugin_interface.models.project_config_definition import ProjectConfigDefinition
 from aisc_plugin_interface.utils import classproperty
 from aisc_plugin_interface.models.task import TaskProgress
-from aisc_plugin_interface.input_providers.base_input_provider import BaseInputProvider
 from aisc_plugin_interface.models.measure import Measure, MetricVisualization, ChartType
 
 ProgressCallback: TypeAlias = Callable[[TaskProgress], None]
@@ -71,11 +70,10 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
     ui_icon: str | None = None
 
     _input_definitions: list[InputDefinition] = []
-    _input_provider_types: dict[str, Type[BaseInputProvider]] = {}
     _project_config_definitions: list[ProjectConfigDefinition] = []
 
     def __init__(self):
-        self._input_provider_instances: dict[str, BaseInputProvider] = {}
+        self._input_contents: dict[str, Any] = {}
         self._project_settings: dict[str, Any] = {}
         self._progress_callback: ProgressCallback | None = None
         self._artifact_callback: ArtifactCallback | None = None
@@ -98,7 +96,7 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
         default = cls.__name__
 
         if cls.is_direct_subclass():
-            # cls is a direct subclass of BaseInputProvider
+            # cls is a direct subclass of BaseEvaluationPlugin
             return plugin_name or default
         else:
             if plugin_name is None:
@@ -310,27 +308,19 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
                 f"Artifact callback not configured. Dropping artifact: {name}"
             )
 
-    def set_input_content(self, name: str, file_content: bytes | Path | Any | None) -> None:
-        """
-        Called by the runtime. Instantiates the provider mapped via @input.
+    def set_input_content(self, name: str, content: Any | None) -> None:
+        """Store the value the runtime produced for an input slot (ADR 0009 D-22).
 
-        ``file_content`` may be:
-        - the raw input bytes read from the tmp file,
-        - a ``Path`` to a tmp file the provider is expected to read itself,
-        - already-parsed data ``T`` of any type.
+        The runtime resolves the slot's data adapter — a standard one, or one the
+        plugin ships — and hands the produced value here; :meth:`get_input_data`
+        returns it. JSON-backed slots (``llm``/``datashape``/``resource``/endpoint)
+        receive the parsed document instead.
         """
-        provider_cls = self._input_provider_types.get(name)
-        if provider_cls and file_content is not None:
-            self._input_provider_instances[name] = provider_cls(file_content)
+        self._input_contents[name] = content
 
     def get_input_data(self, name: str) -> Any | None:
-        """
-        Get data from InputProvider using name set in evaluation_input decorator
-        """
-        provider = self._input_provider_instances.get(name)
-        if provider is None:
-            return None
-        return provider.get_data()
+        """The value produced for the slot named in ``@evaluation_input``."""
+        return self._input_contents.get(name)
 
     def get_input_datashape(self, name: str) -> DataShape | None:
         """
@@ -486,8 +476,8 @@ class BaseEvaluationPlugin[T: BaseModel](ABC):
             ``None`` when the file cannot be interpreted as a valid config.
 
         Tip:
-            Use an ``InputProvider`` (e.g. ``CsvInputProvider``) to read the
-            file contents before extracting config fields.
+            Read the file with the plugin's own logic (a data adapter or a
+            direct parse) before extracting config fields.
         """
         return None
 

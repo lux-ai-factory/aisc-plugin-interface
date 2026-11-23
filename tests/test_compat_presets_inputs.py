@@ -17,8 +17,6 @@ from aisc_plugin_interface.adapters.faces import (
     render_chat_response,
 )
 from aisc_plugin_interface.decorators.evaluation_input import evaluation_input
-from aisc_plugin_interface.input_providers.csv_input_provider import CsvInputProvider
-from aisc_plugin_interface.input_providers.json_input_provider import JsonInputProvider
 from aisc_plugin_interface.models.evaluation_input import InputType
 
 
@@ -125,16 +123,16 @@ def test_llm_shorthand_sets_accepts_and_role():
     assert definition.role == InputRole.SUBJECT.value
 
 
-def test_dataset_with_a_provider_uses_the_provider_value_type():
-    @evaluation_input(name="data", label="Data", input_provider_class=CsvInputProvider, input_type=InputType.DATASET)
+def test_dataset_shorthand_is_records():
+    @evaluation_input(name="data", label="Data", input_type=InputType.DATASET)
     class Plugin:
         pass
 
     assert Plugin._input_definitions[0].accepts == ["records"]
 
 
-def test_dataset_without_a_provider_uses_the_shorthand():
-    @evaluation_input(name="data", label="Data", input_provider_class=CsvInputProvider, input_type=InputType.DATASET, accepts=["table"])
+def test_dataset_can_ask_for_a_table():
+    @evaluation_input(name="data", label="Data", input_type=InputType.DATASET, accepts=["table"])
     class Plugin:
         pass
 
