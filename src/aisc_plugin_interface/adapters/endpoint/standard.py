@@ -28,10 +28,16 @@ from aisc_plugin_interface.adapters.base import (
 
 
 class _TargetConfig(BaseModel):
-    """Fields shared by the endpoint adapters that place their own secret header."""
+    """Fields shared by the endpoint adapters that place their own secret header.
+
+    ``model`` is the target's own model name (an OpenAI model id, an OIP model
+    name). It lives in the adapter's config, not a component column, so a new
+    protocol's naming needs no migration (ADR 0009 D-12).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    model: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
     secret_header: str = ""
 
@@ -92,7 +98,7 @@ class OpenAiEndpointAdapter(EndpointAdapter):
         """The one call a "Test" makes: a minimal chat completion."""
         base = _base(target.url)
         messages = list(turn.history) + [{"role": "user", "content": turn.input}]
-        body = {"model": target.model, "messages": messages}
+        body = {"model": self.config.model, "messages": messages}
         return Request(method="POST", url=f"{base}/chat/completions", headers=_headers(self.config, secret), json_body=body)
 
     def parse_response(self, status: int, text: str, target: Any) -> Answer:
@@ -144,7 +150,7 @@ class OipEndpointAdapter(EndpointAdapter):
         }
         return Request(
             method="POST",
-            url=f"{base}/v2/models/{target.model}/infer",
+            url=f"{base}/v2/models/{self.config.model}/infer",
             headers=_headers(self.config, secret),
             json_body=body,
         )

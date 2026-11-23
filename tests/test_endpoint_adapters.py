@@ -53,8 +53,8 @@ def test_openai_rewrite_swaps_the_key_and_keeps_the_path():
 
 
 def test_openai_test_builds_a_chat_completion():
-    adapter = _adapter(OpenAiEndpointAdapter)
-    request = adapter.build_request(Target(url="https://llm.example.com/v1", model="gpt-4o-mini"), Secret(key="sk"), turn=Turn(input="hello"))
+    adapter = _adapter(OpenAiEndpointAdapter, model="gpt-4o-mini")
+    request = adapter.build_request(Target(url="https://llm.example.com/v1"), Secret(key="sk"), turn=Turn(input="hello"))
     assert request.url == "https://llm.example.com/v1/chat/completions"
     assert request.json_body["model"] == "gpt-4o-mini"
     assert request.json_body["messages"][-1] == {"role": "user", "content": "hello"}
@@ -136,8 +136,8 @@ def test_the_agent_card_url_follows_the_version():
 
 
 def test_oip_builds_and_decodes():
-    adapter = _adapter(OipEndpointAdapter)
-    request = adapter.build_request(Target(url="https://kserve.example.com", model="m1"), Secret(), turn=Turn(input="ping"))
+    adapter = _adapter(OipEndpointAdapter, model="m1")
+    request = adapter.build_request(Target(url="https://kserve.example.com"), Secret(), turn=Turn(input="ping"))
     assert request.url == "https://kserve.example.com/v2/models/m1/infer"
     assert request.json_body["inputs"][0]["datatype"] == "BYTES"
     encoded = base64.b64encode(b"decoded answer").decode()

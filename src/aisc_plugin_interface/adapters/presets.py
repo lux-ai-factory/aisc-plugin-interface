@@ -17,9 +17,8 @@ from typing import Any
 class PresetField:
     """One field of a preset's form.
 
-    ``target`` is where the value goes: a component column (``url``, ``model``,
-    ``secret``) or the adapter's config (``config``, with ``key`` naming the
-    config field).
+    ``target`` is where the value goes: a component column (``url``, ``secret``)
+    or the adapter's config (``config``, with ``key`` naming the config field).
     """
 
     key: str
@@ -47,7 +46,7 @@ class Preset:
 _LLM_FIELDS = (
     PresetField("url", "Endpoint URL", target="url", type="string", required=True),
     PresetField("secret", "API key", target="secret", type="string", secret=True),
-    PresetField("model", "Model", target="model", type="string"),
+    PresetField("model", "Model", target="config", config_key="model", type="string"),
 )
 
 PRESETS: dict[str, Preset] = {
@@ -73,7 +72,7 @@ PRESETS: dict[str, Preset] = {
         adapter="oip",
         fields=(
             PresetField("url", "Endpoint URL", target="url", required=True),
-            PresetField("model", "Model", target="model", required=True),
+            PresetField("model", "Model", target="config", config_key="model", required=True),
             PresetField("secret", "API key", target="secret", secret=True),
         ),
     ),
